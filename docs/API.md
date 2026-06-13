@@ -192,7 +192,8 @@ window.__cpp__.obj.count = 42;          // 设置
 
 ```cpp
 bool init(const std::string& title, const std::string& url = "",
-          int width = 800, int height = 600, bool resizable = true);
+          int width = 800, int height = 600, bool resizable = true,
+          int debug_port = 0);
 ```
 
 | 参数 | 说明 |
@@ -202,6 +203,7 @@ bool init(const std::string& title, const std::string& url = "",
 | `width` | 窗口宽度 |
 | `height` | 窗口高度 |
 | `resizable` | 是否可调整大小 |
+| `debug_port` | CDP 远程调试端口 (0=禁用, >0=端口号, 仅 Windows 有效) |
 
 ### 主循环
 
@@ -455,8 +457,9 @@ try {
 | `__webview_async_call__(obj, method, reqJson)` | 异步调用 C++ 方法 |
 | `__webview_get_property__(obj, prop)` | 读取 C++ 属性 |
 | `__webview_set_property__(obj, prop, valJson)` | 设置 C++ 属性 |
-| `__webview_create__(reqJson)` | 工厂创建实例 |
+| `__webview_create__(typeName, argsJson)` | 工厂创建实例 |
 | `__webview_destroy__(instanceId)` | 销毁实例 |
+| `__webview_list_types__()` | 列出已注册的工厂类型 |
 | `__cpp_result__(id, success, valueJson)` | C++ 调用 JS 回调 |
 | `__register_cb__(name, fn)` | JS 注册回调供 C++ 调用 |
 
@@ -493,7 +496,7 @@ JS: Promise resolves
 ```
 JS: new window.__cpp__.Worker("Alice", 5)
   ↓
-JS: __webview_create__(["Worker", ["Alice", 5]])
+JS: __webview_create__("Worker", "[\"Alice\",5]")
   ↓
 C++: factory(args) → make_shared<WorkerService>("Alice", 5)
   ↓

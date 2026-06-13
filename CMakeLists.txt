@@ -58,6 +58,11 @@ FetchContent_Declare(
     GIT_TAG 0.12.0
 )
 
+# MSVC: treat source files as UTF-8, suppress C4819 warnings
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # 禁用 webview 的 examples/tests/docs
 set(WEBVIEW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(WEBVIEW_BUILD_TESTS OFF CACHE BOOL "" FORCE)

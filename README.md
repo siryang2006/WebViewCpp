@@ -130,6 +130,27 @@ console.log(window.__cpp__.math.version);  // "1.0"
 console.log(window.__cpp__.math.pi);       // 3.14159
 ```
 
+## 测试
+
+项目包含两套测试：
+
+**C++ 单元测试** — 直接测试 `CppObject` 绑定逻辑，无需 WebView：
+
+```bash
+run_tests.bat
+# 或: build\Debug\WebViewCpp.exe --test
+```
+
+**CDP 端到端测试** — 通过 Chrome DevTools Protocol 驱动真实 WebView2，验证 JS ↔ C++ 全链路：
+
+```bash
+test_cdp.bat              # 默认端口 9222
+test_cdp.bat 9333         # 指定端口
+# 或: python tests/test_cdp.py
+```
+
+CDP 测试要求 `pip install websockets`，并以 `--cdp-port=<port>` 启动程序开启远程调试端口（仅 Windows / WebView2）。
+
 ## 类型安全绑定
 
 ### 支持类型
@@ -256,13 +277,17 @@ bind_async("heavy_work", [](const std::string& id,
 WebViewCpp/
 ├── CMakeLists.txt              # 构建配置 (CMake 3.20+)
 ├── build.bat                   # Windows 构建脚本
+├── run_tests.bat               # C++ 单元测试
+├── test_cdp.bat                # CDP 端到端测试
 ├── include/
 │   ├── WebViewWrapper.h        # 核心封装类
 │   └── binding/
 │       └── CppObject.h         # 基类 (类型安全绑定 + 工厂)
 ├── src/
 │   ├── WebViewWrapper.cpp      # 实现 (JS Bridge + 生命周期)
-│   └── main.cpp                # 示例程序
+│   └── main.cpp                # 示例程序 + C++ 单元测试
+├── tests/
+│   └── test_cdp.py             # CDP 端到端测试
 └── docs/
     └── API.md                  # API 参考文档
 ```

@@ -2,6 +2,7 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <cmath>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -21,7 +22,6 @@ public:
             return args[0].get<int>() * args[1].get<int>();
         });
 
-        // 异步方法：使用 wv->dispatch_task 替代 detach
         bind_async("slow_add", [](const std::string& id, const json& args, WebViewWrapper* wv) {
             int a = args[0].get<int>();
             int b = args[1].get<int>();
@@ -123,7 +123,6 @@ public:
         });
     }
 
-    // 工厂构造函数
     static std::shared_ptr<WorkerService> create(const json& args) {
         std::string name = args.size() > 0 ? args[0].get<std::string>() : "default";
         int priority = args.size() > 1 ? args[1].get<int>() : 0;
@@ -141,29 +140,226 @@ private:
 };
 
 // ============================================================
+// C++ 服务测试（纯 C++ 单元测试，无需 WebView）
+// ============================================================
+static bool run_cpp_tests() {
+    auto report = [](const std::string& name, bool ok, const std::string& detail = "") {
+        std::cout << "  [" << (ok ? "PASS" : "FAIL") << "] " << name;
+        if (!detail.empty()) std::cout << " - " << detail;
+        std::cout << std::endl;
+        return ok;
+    };
+
+    std::cout << "\n=== C++ Service Tests ===" << std::endl;
+    int passed = 0, failed = 0;
+
+    auto math = std::make_shared<MathService>();
+
+    try {
+        json r = math->invoke_sync("add", {10, 20});
+        if (r == 30) { report("math.add(10,20)", true, "got " + r.dump()); passed++; }
+        else { report("math.add(10,20)", false, "Expected 30, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("math.add(10,20)", false, e.what()); failed++; }
+
+    try {
+        json r = math->invoke_sync("multiply", {6, 7});
+        if (r == 42) { report("math.multiply(6,7)", true, "got " + r.dump()); passed++; }
+        else { report("math.multiply(6,7)", false, "Expected 42, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("math.multiply(6,7)", false, e.what()); failed++; }
+
+    try {
+        json r = math->get_property("version");
+        if (r == "1.0.0") { report("math.version", true, "got " + r.dump()); passed++; }
+        else { report("math.version", false, "Expected \"1.0.0\", got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("math.version", false, e.what()); failed++; }
+
+    try {
+        json r = math->get_property("pi");
+        double v = r;
+        if (std::abs(v - 3.14159) < 0.001) { report("math.pi", true, "got " + r.dump()); passed++; }
+        else { report("math.pi", false, "Expected ~3.14159, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("math.pi", false, e.what()); failed++; }
+
+    try { math->invoke_sync("nonexistent", {}); report("math.error_method_not_found", false, "no exception"); failed++; }
+    catch (const std::exception& e) { report("math.error_method_not_found", true, std::string("caught: ") + e.what()); passed++; }
+
+    try { math->get_property("nonexistent"); report("math.error_property_not_found", false, "no exception"); failed++; }
+    catch (const std::exception& e) { report("math.error_property_not_found", true, std::string("caught: ") + e.what()); passed++; }
+
+    try { math->set_property("version", "2.0"); report("math.error_set_readonly", false, "no exception"); failed++; }
+    catch (const std::exception& e) { report("math.error_set_readonly", true, std::string("caught: ") + e.what()); passed++; }
+
+    try { math->invoke_sync("add", {"hello", 20}); report("math.add_wrong_arg_type", false, "no exception"); failed++; }
+    catch (const std::exception& e) { report("math.add_wrong_arg_type", true, std::string("caught: ") + e.what()); passed++; }
+
+    auto file = std::make_shared<FileService>();
+
+    try {
+        json r = file->object_name();
+        if (r == "file") { report("file.object_name", true, "got " + r.dump()); passed++; }
+        else { report("file.object_name", false, "Expected \"file\", got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("file.object_name", false, e.what()); failed++; }
+
+    try { file->invoke_sync("read", {"test.txt"}); report("file.read_is_async", false, "no exception"); failed++; }
+    catch (const std::exception& e) { report("file.read_is_async", true, std::string("caught: ") + e.what()); passed++; }
+
+    try { file->invoke_sync("write", {"test.txt", "content"}); report("file.write_is_async", false, "no exception"); failed++; }
+    catch (const std::exception& e) { report("file.write_is_async", true, std::string("caught: ") + e.what()); passed++; }
+
+    auto worker = WorkerService::create({"Alice", 5});
+
+    try {
+        json r = worker->invoke_sync("getName", {});
+        if (r == "Alice") { report("Worker.getName", true, "got " + r.dump()); passed++; }
+        else { report("Worker.getName", false, "Expected \"Alice\", got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("Worker.getName", false, e.what()); failed++; }
+
+    try {
+        json r = worker->invoke_sync("getPriority", {});
+        if (r == 5) { report("Worker.getPriority", true, "got " + r.dump()); passed++; }
+        else { report("Worker.getPriority", false, "Expected 5, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("Worker.getPriority", false, e.what()); failed++; }
+
+    try {
+        json r = worker->invoke_sync("setPriority", {8});
+        if (r == 8) { report("Worker.setPriority(8)", true, "got " + r.dump()); passed++; }
+        else { report("Worker.setPriority(8)", false, "Expected 8, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("Worker.setPriority(8)", false, e.what()); failed++; }
+
+    try {
+        json r = worker->invoke_sync("getPriority", {});
+        if (r == 8) { report("Worker.getPriority_after_set", true, "got " + r.dump()); passed++; }
+        else { report("Worker.getPriority_after_set", false, "Expected 8, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("Worker.getPriority_after_set", false, e.what()); failed++; }
+
+    try { worker->invoke_sync("nonexistent", {}); report("Worker.error_method_not_found", false, "no exception"); failed++; }
+    catch (const std::exception& e) { report("Worker.error_method_not_found", true, std::string("caught: ") + e.what()); passed++; }
+
+    try { worker->get_property("nonexistent"); report("Worker.error_property_not_found", false, "no exception"); failed++; }
+    catch (const std::exception& e) { report("Worker.error_property_not_found", true, std::string("caught: ") + e.what()); passed++; }
+
+    try { worker->set_property("getName", "Bob"); report("Worker.error_set_non_existent", false, "no exception"); failed++; }
+    catch (const std::exception& e) { report("Worker.error_set_non_existent", true, std::string("caught: ") + e.what()); passed++; }
+
+    try {
+        auto w = WorkerService::create({});
+        json r = w->invoke_sync("getName", {});
+        if (r == "default") { report("Worker.default_name", true, "got " + r.dump()); passed++; }
+        else { report("Worker.default_name", false, "Expected \"default\", got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("Worker.default_name", false, e.what()); failed++; }
+
+    try {
+        auto w = WorkerService::create({});
+        json r = w->invoke_sync("getPriority", {});
+        if (r == 0) { report("Worker.default_priority", true, "got " + r.dump()); passed++; }
+        else { report("Worker.default_priority", false, "Expected 0, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("Worker.default_priority", false, e.what()); failed++; }
+
+    try {
+        auto w = WorkerService::create({"Bob"});
+        json r = w->invoke_sync("getName", {});
+        if (r == "Bob") { report("Worker.partial_arg_name", true, "got " + r.dump()); passed++; }
+        else { report("Worker.partial_arg_name", false, "Expected \"Bob\", got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("Worker.partial_arg_name", false, e.what()); failed++; }
+
+    try {
+        auto w = WorkerService::create({"Bob"});
+        json r = w->invoke_sync("getPriority", {});
+        if (r == 0) { report("Worker.partial_arg_priority", true, "got " + r.dump()); passed++; }
+        else { report("Worker.partial_arg_priority", false, "Expected 0, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("Worker.partial_arg_priority", false, e.what()); failed++; }
+
+    try {
+        auto a = WorkerService::create({"Alice", 5});
+        auto b = WorkerService::create({"Bob", 10});
+        a->invoke_sync("setPriority", {99});
+        json ra = a->invoke_sync("getPriority", {});
+        json rb = b->invoke_sync("getPriority", {});
+        bool ids = a->instance_id() != b->instance_id();
+        bool ok = true;
+        if (ra != 99) { report("Worker.multi_A_priority", false, "Expected 99, got " + ra.dump()); ok = false; }
+        if (rb != 10) { report("Worker.multi_B_priority", false, "Expected 10, got " + rb.dump()); ok = false; }
+        if (!ids) { report("Worker.unique_instance_ids", false, "IDs should differ"); ok = false; }
+        if (ok) {
+            report("Worker.multi_A_priority", true, "got " + ra.dump()); passed++;
+            report("Worker.multi_B_priority", true, "got " + rb.dump()); passed++;
+            report("Worker.unique_instance_ids", true, "A=" + std::to_string(a->instance_id()) + " B=" + std::to_string(b->instance_id())); passed++;
+        } else { failed += 3; }
+    } catch (const std::exception& e) {
+        report("Worker.multi tests", false, e.what()); failed += 3;
+    }
+
+    try { WorkerService::create({"Test", 1})->invoke_sync("doWork", {"task"}); report("Worker.doWork_is_async", false, "no exception"); failed++; }
+    catch (const std::exception& e) { report("Worker.doWork_is_async", true, std::string("caught: ") + e.what()); passed++; }
+
+    try {
+        json r = CppObject::ok_result(42);
+        if (r["ok"] == true && r["data"] == 42) { report("CppObject.ok_result", true, "got " + r.dump()); passed++; }
+        else { report("CppObject.ok_result", false, "Unexpected: " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("CppObject.ok_result", false, e.what()); failed++; }
+
+    try {
+        json r = CppObject::error_result(ErrorCode::INVALID_ARGUMENTS, "bad arg");
+        if (r["ok"] == false && r["code"] == -4 && r["message"] == "bad arg") { report("CppObject.error_result", true, "got " + r.dump()); passed++; }
+        else { report("CppObject.error_result", false, "Unexpected: " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("CppObject.error_result", false, e.what()); failed++; }
+
+    std::cout << "Passed: " << passed << ", Failed: " << failed << ", Total: " << (passed + failed) << std::endl;
+    std::cout << "=== End C++ Tests ===" << std::endl;
+    return failed == 0;
+}
+
+// ============================================================
 // 主函数
 // ============================================================
 #ifdef _WIN32
-int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR lpCmdLine, int) {
+    int cdp_port = 0;
+    bool test_mode = false;
+    if (lpCmdLine && *lpCmdLine) {
+        std::string cmd(lpCmdLine);
+        auto port_pos = cmd.find("--cdp-port=");
+        if (port_pos != std::string::npos) {
+            cdp_port = std::stoi(cmd.substr(port_pos + 11));
+        }
+        if (cmd.find("--test") != std::string::npos) {
+            test_mode = true;
+        }
+    }
+    if (test_mode) {
+        bool ok = run_cpp_tests();
+        return ok ? 0 : 1;
+    }
 #else
-int main() {
+int main(int argc, char* argv[]) {
+    int cdp_port = 0;
+    bool test_mode = false;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg(argv[i]);
+        auto port_pos = arg.find("--cdp-port=");
+        if (port_pos != std::string::npos) {
+            cdp_port = std::stoi(arg.substr(port_pos + 11));
+        }
+        if (arg == "--test") {
+            test_mode = true;
+        }
+    }
+    if (test_mode) {
+        bool ok = run_cpp_tests();
+        return ok ? 0 : 1;
+    }
 #endif
     WebViewWrapper wv;
 
-    if (!wv.init("WebView C++ Binding Demo", "", 1024, 768)) {
+    if (!wv.init("WebView C++ Binding Demo", "", 1024, 768, true, cdp_port)) {
         std::cerr << "Failed to create webview" << std::endl;
         return 1;
     }
 
-    // 1. 全局单例绑定
     wv.bind_object(std::make_shared<MathService>());
     wv.bind_object(std::make_shared<FileService>());
 
-    // 2. 实例工厂：JS new <-> C++ new，JS GC 自动触发 C++ 销毁
     wv.bind_factory("Worker", WorkerService::create, WebViewWrapper::FactoryMode::Instance);
-
-    // 3. 全局工厂：JS 直接调用，C++ 使用全局单例
-    // wv.bind_factory("System", SystemService::create, WebViewWrapper::FactoryMode::Global);
 
     wv.set_html(R"HTML(
 <!DOCTYPE html>
@@ -223,34 +419,34 @@ int main() {
         }
 
         async function testSyncAdd() {
-            log('sync-result', 'math.add(10, 20) = ' + window.__cpp__.math.add(10, 20), 'success');
+            log('sync-result', 'math.add(10, 20) = ' + await window.__cpp__.math.add(10, 20), 'success');
         }
         async function testProperties() {
-            log('sync-result', 'math.version = "' + window.__cpp__.math.version + '"', 'success');
-            log('sync-result', 'math.pi = ' + window.__cpp__.math.pi, 'success');
+            log('sync-result', 'math.version = "' + await window.__cpp__.math.version + '"', 'success');
+            log('sync-result', 'math.pi = ' + await window.__cpp__.math.pi, 'success');
         }
 
         async function testNewWorker() {
-            worker1 = new window.__cpp__.Worker("Alice", 5);
+            worker1 = await window.__cpp__.Worker("Alice", 5);
             log('worker-result', 'Created worker1: ' + JSON.stringify(worker1), 'success');
-            log('worker-result', 'getName() = ' + worker1.getName(), 'success');
-            log('worker-result', 'getPriority() = ' + worker1.getPriority(), 'success');
-            log('worker-result', 'setPriority(8) = ' + worker1.setPriority(8), 'success');
+            log('worker-result', 'getName() = ' + await worker1.getName(), 'success');
+            log('worker-result', 'getPriority() = ' + await worker1.getPriority(), 'success');
+            log('worker-result', 'setPriority(8) = ' + await worker1.setPriority(8), 'success');
 
             var result = await worker1.doWork("Build project");
             log('worker-result', 'doWork() = ' + JSON.stringify(result, null, 2), 'success');
         }
 
         async function testNewWorker2() {
-            worker2 = new window.__cpp__.Worker("Bob", 10);
+            worker2 = await window.__cpp__.Worker("Bob", 10);
             log('worker-result', 'Created worker2: ' + JSON.stringify(worker2), 'success');
             var result = await worker2.doWork("Run tests");
             log('worker-result', 'doWork() = ' + JSON.stringify(result, null, 2), 'success');
         }
 
-        function testWorkerDestroy() {
+        async function testWorkerDestroy() {
             if (worker1) {
-                worker1.__destroy__();
+                await worker1.__destroy__();
                 log('worker-result', 'worker1 destroyed manually', 'success');
                 worker1 = null;
             }
@@ -275,7 +471,6 @@ int main() {
 </html>
     )HTML");
 
-    // C++ 主动调用 JS
     wv.dispatch_task([&wv]() {
         std::this_thread::sleep_for(std::chrono::seconds(3));
         wv.call_registered_js("onCppEvent", {{"event", "startup"}, {"time", "2024-01-01"}});
