@@ -387,7 +387,7 @@ async def run_cdp_tests():
 
         # Register callback button
         cid, _ = await evaluate(ws, cid,
-            "document.getElementById('btn-callback') ? document.getElementById('btn-callback').click() : document.querySelectorAll('button')[7].click()")
+            "Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Register JS callback')?.click()")
         await asyncio.sleep(0.3)
         cid, val = await evaluate(ws, cid,
             "var el = document.getElementById('cpp2js-result'); el ? el.textContent : ''")

@@ -29,6 +29,7 @@
         <h2>2. JS new 创建 C++ 实例</h2>
         <button onclick="testNewWorker()">new Worker("Alice", 5)</button>
         <button onclick="testNewWorker2()">new Worker("Bob", 10)</button>
+        <button onclick="testWorkerMethods()">调用 worker1 成员函数</button>
         <button onclick="testWorkerDestroy()">destroy worker1</button>
         <div id="worker-result" class="result"></div>
     </div>
@@ -80,6 +81,21 @@
             log('worker-result', 'Created worker2: ' + JSON.stringify(worker2), 'success');
             var result = await worker2.doWork("Run tests");
             log('worker-result', 'doWork() = ' + JSON.stringify(result, null, 2), 'success');
+        }
+
+        // 在已创建的实例上调用成员函数（同步方法 + 属性 setter + 异步方法）
+        async function testWorkerMethods() {
+            if (!worker1) {
+                log('worker-result', '请先点 new Worker("Alice", 5) 创建 worker1。', 'error');
+                return;
+            }
+            log('worker-result', '--- 调用 worker1 成员函数 ---', 'loading');
+            log('worker-result', 'getName() = ' + await worker1.getName(), 'success');
+            log('worker-result', 'getPriority() = ' + await worker1.getPriority(), 'success');
+            log('worker-result', 'setPriority(99) = ' + await worker1.setPriority(99), 'success');
+            log('worker-result', 'getPriority() 改后 = ' + await worker1.getPriority(), 'success');
+            var result = await worker1.doWork("Compile");
+            log('worker-result', 'doWork("Compile") = ' + JSON.stringify(result), 'success');
         }
 
         async function testWorkerDestroy() {
