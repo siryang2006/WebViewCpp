@@ -461,7 +461,19 @@ try {
 | `__webview_destroy__(instanceId)` | 销毁实例 |
 | `__webview_list_types__()` | 列出已注册的工厂类型 |
 | `__cpp_result__(id, success, valueJson)` | C++ 调用 JS 回调 |
-| `__register_cb__(name, fn)` | JS 注册回调供 C++ 调用 |
+| `__register_cb__(name, fn)` | JS 注册命名回调供 C++ 调用 |
+| `__store_js_fn__(id, fn)` | 暂存匿名 JS 回调函数（按 id），供 C++ 触发 |
+| `__call_js_fn__(id, args)` | 调用 `__js_callbacks__[id]` 存储的 JS 函数 |
+| `__delete_js_fn__(id)` | 删除已暂存的 JS 回调 |
+
+### 内部状态对象
+
+| JS 全局 | 说明 |
+|---------|------|
+| `window.__cpp__` | 所有 C++ 对象的根命名空间 |
+| `window.__pending_callbacks__` | id → `{resolve, reject}`，Promise 型异步调用的待决回调 |
+| `window.__js_callbacks__` | id → `function`，回调风格传入的匿名 JS 函数 |
+| `window.__registered_cbs__` | name → `function`，`__register_cb__` 注册的命名回调 |
 
 ### 调用流程
 
@@ -513,3 +525,154 @@ C++: wv.call_registered_js("onUpdate", {"event": "click"})
   ↓
 JS: window.__registered_cbs__["onUpdate"]({"event": "click"})
 ```
+
+---
+
+## 异步回调实现原理
+
+`bind_async` 的方法在 JS 端支持两种调用形态，二者共用同一套 C++ 后端：
+
+```javascript
+// 形态 A：Promise
+const r = await window.__cpp__.math.slow_add(1, 2);
+
+// 形态 B：回调风格（末尾传一个函数，Node 约定 cb(err, result)）
+window.__cpp__.math.slow_add(1, 2, function(err, result) { ... });
+```
+
+核心设计：**JS 函数永远不跨越 JS↔C++ 边界**。JS 函数无法被 JSON
+序列化，因此 C++ 侧从不持有函数本身，只持有一个字符串 `id`；真正的回调动作
+由 C++ 通过 `eval` 注入一段 JS 代码、在 JS 侧查表执行来完成。
+
+### 完整链路（以形态 B 为例）
+
+#### 第 1 步：JS 包装函数识别回调并暂存
+
+`inject_single_object` 为每个 async 方法注入的包装函数：
+
+```javascript
+window.__cpp__.math.slow_add = function() {
+    var args = Array.prototype.slice.call(arguments);   // [1, 2, fn]
+    var cb_fn = null;
+    // 末尾参数若为函数，弹出作为回调
+    if (typeof args[args.length-1] === 'function') { cb_fn = args.pop(); }
+    return new Promise(function(resolve, reject) {
+        var id = window.__next_cb_id__();               // 生成唯一 id
+        // 回调风格：登记 null（占位）；Promise 风格：登记 {resolve, reject}
+        window.__pending_callbacks__[id] = cb_fn ? null : { resolve, reject };
+        if (cb_fn) { window.__store_js_fn__(id, cb_fn); } // 函数存进 __js_callbacks__[id]
+        var req = JSON.stringify({ args: args, id: id, has_cb: !!cb_fn });
+        window.__webview_async_call__('math', 'slow_add', req);
+    });
+};
+```
+
+要点：
+- 传给 C++ 的 `req` 只含 `args`（已剔除函数）、`id`、`has_cb` 布尔标记。
+- JS 函数被 `__store_js_fn__` 存入 `window.__js_callbacks__[id]`，留在 JS 侧。
+- 即使是回调风格，包装函数仍返回 Promise，所以两种形态可混用。
+
+#### 第 2 步：C++ 登记回调类型并派发
+
+`__webview_async_call__` 绑定（`setup_js_bridge`）：
+
+```cpp
+bool has_cb = call_data.value("has_cb", false);
+// 仅记录该 id 属于「JS 函数型」还是「Promise 型」，不持有任何函数
+self->m_pending_callbacks[id] = { nullptr, nullptr, /*is_js_callback=*/has_cb };
+// 在派发线程执行用户 lambda，避免阻塞 GUI 线程
+self->dispatch_task([obj, method, id, args, self]() {
+    obj->invoke_async(method, id, args, self);
+});
+```
+
+`PendingCallback` 结构：
+
+```cpp
+struct PendingCallback {
+    std::function<void(const json&)>        on_result;     // call_js 等场景用
+    std::function<void(const std::string&)> on_error;
+    bool is_js_callback = false;   // true → 回调风格；false → Promise 风格
+};
+```
+
+#### 第 3 步：用户 lambda 调用 resolve / reject
+
+```cpp
+bind_async("slow_add", [](const std::string& id, const json& args, WebViewWrapper* wv) {
+    int a = args[0], b = args[1];
+    wv->dispatch_task([id, a, b, wv]() {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        wv->resolve(id, a + b);          // 成功
+        // wv->reject(id, "some error"); // 失败
+    });
+});
+```
+
+#### 第 4 步：resolve / reject 按类型注入 JS
+
+`WebViewWrapper::resolve` 根据 `is_js_callback` 分派：
+
+```cpp
+void WebViewWrapper::resolve(const std::string& id, const json& result) {
+    bool is_js_cb;
+    {
+        std::lock_guard<std::mutex> lock(m_callback_mutex);
+        auto it = m_pending_callbacks.find(id);
+        if (it == m_pending_callbacks.end()) return;   // 已消费/超时
+        is_js_cb = it->second.is_js_callback;
+        m_pending_callbacks.erase(it);
+    }
+    std::string json_str = result.dump(-1, ' ', /*ensure_ascii=*/true);
+    std::string js;
+    if (is_js_cb) {
+        // 回调风格：Node 约定 fn(null, result)，调用后删除
+        js = "var fn=window.__js_callbacks__['" + id + "'];"
+             "if(typeof fn==='function'){fn(null," + json_str + ");"
+             "delete window.__js_callbacks__['" + id + "'];}";
+    } else {
+        // Promise 风格：取出 {resolve,reject} 并 resolve
+        js = "var cb=window.__pending_callbacks__['" + id + "'];"
+             "if(cb){cb.resolve(" + json_str + ");"
+             "delete window.__pending_callbacks__['" + id + "'];}";
+    }
+    post_eval(js);   // 注入 JS，在 GUI 线程消息循环中执行
+}
+```
+
+`reject` 对称处理：回调风格走 `fn(error, null)`，Promise 风格走 `cb.reject(new Error(...))`。
+
+### 时序总览
+
+```
+JS                          C++
+──                          ───
+slow_add(1,2,fn)
+  pop fn → __js_callbacks__[id]=fn
+  __webview_async_call__ ──────► 登记 {is_js_callback:true}
+                                 dispatch_task → 用户 lambda（后台线程）
+                                   ... 2s ...
+                                 wv->resolve(id, 3)
+  __js_callbacks__[id](null,3) ◄── post_eval 注入 JS
+  delete __js_callbacks__[id]
+```
+
+### 设计要点
+
+| 关注点 | 处理方式 |
+|--------|---------|
+| JS 函数不可序列化 | 函数留在 JS 侧 `__js_callbacks__`，C++ 只持有 `id` |
+| 两种调用形态统一 | 包装函数恒返回 Promise，`has_cb` 决定回调路径 |
+| 线程安全 | 用户 lambda 在派发线程执行；`m_callback_mutex` 保护待决表 |
+| 跨线程回 JS | `resolve/reject` 用 `post_eval`，由 GUI 线程消息循环执行 |
+| 防重复/超时 | 查表后立即 `erase`；`call_js` 类带 `timeout_ms` 超时清理 |
+| 非 ASCII 安全 | `dump(-1, ' ', true)` 转义 U+2028/U+2029 等字符 |
+
+### 与命名回调（`__register_cb__`）的区别
+
+| | 匿名回调（`__store_js_fn__`） | 命名回调（`__register_cb__`） |
+|---|---|---|
+| 触发方 | C++ 完成 async 调用后自动回调 | C++ 主动 `call_registered_js(name, ...)` |
+| 标识 | 一次性 `id`，调用后删除 | 字符串 `name`，可反复触发 |
+| 存储 | `window.__js_callbacks__[id]` | `window.__registered_cbs__[name]` |
+| 典型场景 | `fn(a,b,cb)` 异步结果回调 | C++ 主动推送事件给 JS |
