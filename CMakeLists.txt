@@ -58,6 +58,11 @@ FetchContent_Declare(
     GIT_TAG 0.12.0
 )
 
+# MSVC: treat source files as UTF-8, suppress C4819 warnings
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # 禁用 webview 的 examples/tests/docs
 set(WEBVIEW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(WEBVIEW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -97,4 +102,11 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${WEBVIEW2_DIR}/runtimes/win-x64/native/WebView2Loader.dll"
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/WebView2Loader.dll
+)
+
+# 复制 demo.html 到输出目录（与 exe 同目录）
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/src/demo.html"
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/demo.html
 )

@@ -8,8 +8,6 @@
 #include <memory>
 #include <atomic>
 #include <stdexcept>
-#include <mutex>
-#include <sstream>
 #include <tuple>
 #include <type_traits>
 
@@ -23,11 +21,12 @@ using json = nlohmann::json;
 // ============================================================
 enum class ErrorCode {
     OK                 = 0,
-    METHOD_NOT_FOUND   = -1,
-    PROPERTY_NOT_FOUND = -2,
-    INVALID_ARGUMENTS  = -3,
-    OBJECT_DESTROYED   = -4,
-    INTERNAL_ERROR     = -5,
+    OBJECT_NOT_FOUND   = -1,
+    METHOD_NOT_FOUND   = -2,
+    PROPERTY_NOT_FOUND = -3,
+    INVALID_ARGUMENTS  = -4,
+    OBJECT_DESTROYED   = -5,
+    INTERNAL_ERROR     = -10,
     USER_ERROR         = -100,
 };
 
@@ -36,6 +35,17 @@ public:
     explicit BindingException(ErrorCode code, const std::string& msg)
         : std::runtime_error(msg), m_code(code) {}
     ErrorCode code() const { return m_code; }
+    // 结构化错误：所有 binding 错误统一返回此格式，
+    // JS 端可直接检查 result.ok === false 并读取 code/message。
+    json to_json() const {
+        return { {"ok", false}, {"code", static_cast<int>(m_code)}, {"message", what()} };
+    }
+    // 工厂方法：将任意异常转换为 BindingException。
+    // 若已是 BindingException 直接返回，否则包装为 INTERNAL_ERROR。
+    static BindingException from(const std::exception& e) {
+        if (auto* be = dynamic_cast<const BindingException*>(&e)) return *be;
+        return BindingException(ErrorCode::INTERNAL_ERROR, e.what());
+    }
 private:
     ErrorCode m_code;
 };
@@ -47,16 +57,9 @@ struct ErrorResult {
     ErrorResult(ErrorCode c, std::string m) : code(c), message(std::move(m)) {}
     bool ok() const { return code == ErrorCode::OK; }
     json to_json() const {
-        return { {"ok", false}, {"code", static_cast<int>(code)}, {"error", message} };
+        return { {"ok", false}, {"code", static_cast<int>(code)}, {"message", message} };
     }
 };
-
-inline void validate_arg_count(const std::string& method, size_t expected, size_t actual) {
-    if (expected != actual) {
-        throw std::runtime_error("[" + method + "] Expected " + std::to_string(expected) +
-            " arguments, got " + std::to_string(actual));
-    }
-}
 
 // ============================================================
 // JsCallback
@@ -189,7 +192,11 @@ public:
     }
 
 protected:
-    void mark_destroyed() { m_destroyed.store(true); on_destroyed(); }
+    // 幂等：on_destroyed() 只会在首次标记销毁时调用一次。
+    // 既可由 JS 端显式 __destroy__ 触发，也可由 ~CppObject 触发，避免重复回调。
+    void mark_destroyed() {
+        if (!m_destroyed.exchange(true)) on_destroyed();
+    }
 
 private:
     static int64_t next_id() { static std::atomic<int64_t> id{0}; return ++id; }
@@ -217,9 +224,6 @@ private:
         static_assert(std::is_default_constructible_v<T> || std::is_same_v<T, json>,
             "bind_sync/async: type must be default constructible or json");
     }
-
-    template<typename... Ts>
-    constexpr void check_all_types() { (check_arg_type<Ts>(), ...); }
 
     // 参数类型提取（从 lambda operator() 签名）
     template<typename> struct fn_sig;
