@@ -387,7 +387,7 @@ async def run_cdp_tests():
 
         # Register callback button
         cid, _ = await evaluate(ws, cid,
-            "document.getElementById('btn-callback') ? document.getElementById('btn-callback').click() : document.querySelectorAll('button')[6].click()")
+            "document.getElementById('btn-callback') ? document.getElementById('btn-callback').click() : document.querySelectorAll('button')[7].click()")
         await asyncio.sleep(0.3)
         cid, val = await evaluate(ws, cid,
             "var el = document.getElementById('cpp2js-result'); el ? el.textContent : ''")
@@ -411,6 +411,43 @@ async def run_cdp_tests():
         cid, val = await evaluate(ws, cid,
             "typeof window.__cpp__.file.read")
         check("file.read is async function", val == "function")
+
+        # ========== Callback-style async: fn(a, b, function(err, result){}) ==========
+        # 末尾传 JS 函数，C++ 完成后以 Node 约定 cb(err, result) 回调它。
+        cid, val = await evaluate(ws, cid, """
+            new Promise(function(resolve) {
+                window.__cpp__.math.slow_add(1, 2, function(err, result) {
+                    resolve(JSON.stringify({err: err, result: result}));
+                });
+            })
+        """, await_promise=True, timeout_ms=5000)
+        check("slow_add(1,2,cb) callback receives result",
+              val == '{"err":null,"result":3}', f"got {val}")
+
+        # 回调风格返回值是 Promise（兼容 await）；这里同时验证 await 链路一致。
+        cid, val = await evaluate(ws, cid,
+            "(async()=>{ return await window.__cpp__.math.slow_add(5, 7); })()",
+            await_promise=True, timeout_ms=5000)
+        check("slow_add(5,7) await (no cb) = 12", val == 12, f"got {val}")
+
+        # ========== Reverse call: JS → C++.fire_event → C++ → registered JS cb ==========
+        # 注册回调 → JS 调 C++.fire_event → C++ 反向调用 onCppEvent，验证整条闭环。
+        cid, val = await evaluate(ws, cid, """
+            new Promise(function(resolve) {
+                window.__register_cb__("onCppEvent", function(args) {
+                    resolve(JSON.stringify(args));
+                });
+                window.__cpp__.math.fire_event("test-evt");
+            })
+        """, await_promise=True, timeout_ms=5000)
+        check("fire_event triggers registered onCppEvent",
+              val == '{"event":"test-evt","source":"fire_event"}', f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            '(async()=>{ var r = await window.__cpp__.math.fire_event("x"); return JSON.stringify(r); })()',
+            await_promise=True, timeout_ms=5000)
+        check("fire_event returns ack to caller",
+              val == '{"event":"x","fired":true}', f"got {val}")
 
         # ========== Section Summary ==========
         print(f"\nCDP Tests: {passed} passed, {failed} failed, "

@@ -563,7 +563,11 @@ void WebViewWrapper::call_js(const std::string& func_name, const json& args,
 }
 
 void WebViewWrapper::call_registered_js(const std::string& name, const json& args) {
-    post_eval("window[" + json(name).dump() + "](" + args.dump(-1, ' ', true) + ")");
+    // 回调存于 __registered_cbs__（由 __register_cb__ 注册），而非 window 顶层。
+    post_eval(
+        "(function(){var fn=(window.__registered_cbs__||{})[" + json(name).dump() + "];"
+        "if(typeof fn==='function'){fn(" + args.dump(-1, ' ', true) + ");}})();"
+    );
 }
 
 // ============================================================

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>C++ / JS Binding Demo</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; margin: 20px; background: #1a1a2e; color: #e0e0e0; }
+        h1 { color: #00d4ff; }
+        .section { background: #16213e; padding: 15px; border-radius: 8px; margin: 10px 0; }
+        button { background: #0f3460; color: white; border: none; padding: 8px 16px;
+                 border-radius: 4px; cursor: pointer; margin: 4px; }
+        button:hover { background: #533483; }
+        .result { background: #0a0a1a; padding: 10px; border-radius: 4px; margin-top: 10px;
+                  font-family: monospace; white-space: pre-wrap; }
+        .loading { color: #ffcc00; } .success { color: #00ff88; } .error { color: #ff4444; }
+    </style>
+</head>
+<body>
+    <h1>C++ / JS Object Binding Demo</h1>
+
+    <div class="section">
+        <h2>1. 全局单例</h2>
+        <button onclick="testSyncAdd()">math.add(10, 20)</button>
+        <button onclick="testProperties()">math.version & math.pi</button>
+        <div id="sync-result" class="result"></div>
+    </div>
+
+    <div class="section">
+        <h2>2. JS new 创建 C++ 实例</h2>
+        <button onclick="testNewWorker()">new Worker("Alice", 5)</button>
+        <button onclick="testNewWorker2()">new Worker("Bob", 10)</button>
+        <button onclick="testWorkerDestroy()">destroy worker1</button>
+        <div id="worker-result" class="result"></div>
+    </div>
+
+    <div class="section">
+        <h2>3. 异步方法</h2>
+        <button onclick="testAsync()">file.read("config.json")</button>
+        <button onclick="testCallbackStyle()">slow_add(1, 2, function(err, result){alert(result)})</button>
+        <div id="async-result" class="result"></div>
+    </div>
+
+    <div class="section">
+        <h2>4. C++ calls JS</h2>
+        <button onclick="registerCallback()">Register JS callback</button>
+        <button onclick="fireEvent()">触发 C++ 回调 JS (fire_event)</button>
+        <div id="cpp2js-result" class="result"></div>
+    </div>
+
+    <script>
+        var worker1, worker2;
+
+        function log(id, msg, cls) {
+            var el = document.getElementById(id);
+            el.className = 'result ' + (cls || '');
+            el.textContent += msg + '\n';
+        }
+
+        async function testSyncAdd() {
+            log('sync-result', 'math.add(10, 20) = ' + await window.__cpp__.math.add(10, 20), 'success');
+        }
+        async function testProperties() {
+            log('sync-result', 'math.version = "' + await window.__cpp__.math.version + '"', 'success');
+            log('sync-result', 'math.pi = ' + await window.__cpp__.math.pi, 'success');
+        }
+
+        async function testNewWorker() {
+            worker1 = await window.__cpp__.Worker("Alice", 5);
+            log('worker-result', 'Created worker1: ' + JSON.stringify(worker1), 'success');
+            log('worker-result', 'getName() = ' + await worker1.getName(), 'success');
+            log('worker-result', 'getPriority() = ' + await worker1.getPriority(), 'success');
+            log('worker-result', 'setPriority(8) = ' + await worker1.setPriority(8), 'success');
+
+            var result = await worker1.doWork("Build project");
+            log('worker-result', 'doWork() = ' + JSON.stringify(result, null, 2), 'success');
+        }
+
+        async function testNewWorker2() {
+            worker2 = await window.__cpp__.Worker("Bob", 10);
+            log('worker-result', 'Created worker2: ' + JSON.stringify(worker2), 'success');
+            var result = await worker2.doWork("Run tests");
+            log('worker-result', 'doWork() = ' + JSON.stringify(result, null, 2), 'success');
+        }
+
+        async function testWorkerDestroy() {
+            if (worker1) {
+                await worker1.__destroy__();
+                log('worker-result', 'worker1 destroyed manually', 'success');
+                worker1 = null;
+            }
+        }
+
+        async function testAsync() {
+            log('async-result', 'Calling file.read("config.json")...', 'loading');
+            try {
+                var r = await window.__cpp__.file.read("config.json");
+                log('async-result', 'file.read() = ' + JSON.stringify(r, null, 2), 'success');
+            } catch(e) { log('async-result', 'Error: ' + e.message, 'error'); }
+        }
+
+        // 回调风格：末尾传一个 function，C++ 完成时以 Node 约定 cb(err, result) 回调
+        function testCallbackStyle() {
+            log('async-result', 'slow_add(1, 2, cb) 调用中...', 'loading');
+            window.__cpp__.math.slow_add(1, 2, function(err, result) {
+                if (err) {
+                    log('async-result', '回调收到错误: ' + err, 'error');
+                } else {
+                    log('async-result', '回调收到结果: slow_add(1,2) = ' + result, 'success');
+                }
+            });
+        }
+
+        function registerCallback() {
+            window.__register_cb__("onCppEvent", function(args) {
+                log('cpp2js-result', 'C++ called JS: ' + JSON.stringify(args), 'success');
+            });
+            log('cpp2js-result', 'Callback registered. 现在点"触发 C++ 回调 JS"。', 'loading');
+        }
+
+        // JS 调用 C++ 的 fire_event，C++ 反过来回调已注册的 onCppEvent
+        async function fireEvent() {
+            if (!window.__registered_cbs__ || !window.__registered_cbs__.onCppEvent) {
+                log('cpp2js-result', '请先点 "Register JS callback" 注册回调。', 'error');
+                return;
+            }
+            var r = await window.__cpp__.math.fire_event("button-click");
+            log('cpp2js-result', 'fire_event 返回: ' + JSON.stringify(r), 'success');
+        }
+    </script>
+</body>
+</html>

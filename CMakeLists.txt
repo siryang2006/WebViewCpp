@@ -103,3 +103,10 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         "${WEBVIEW2_DIR}/runtimes/win-x64/native/WebView2Loader.dll"
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/WebView2Loader.dll
 )
+
+# 复制 demo.html 到输出目录（与 exe 同目录）
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/src/demo.html"
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/demo.html
+)

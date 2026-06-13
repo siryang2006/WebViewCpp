@@ -1,5 +1,7 @@
 #include "WebViewWrapper.h"
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <chrono>
 #include <thread>
 #include <cmath>
@@ -49,6 +51,19 @@ public:
 
         bind_property("version", []() -> std::string { return "1.0.0"; });
         bind_property("pi", []() -> double { return 3.14159; });
+
+        // 反向调用：JS 调用此方法后，C++ 主动回调已注册的 JS 回调（onCppEvent）。
+        bind_async("fire_event", [](const std::string& id, const json& args, WebViewWrapper* wv) {
+            std::string event = args.empty() ? "manual" : args[0].get<std::string>();
+            wv->dispatch_task([id, event, wv]() {
+                if (!wv->is_ready()) {
+                    wv->reject(id, "WebView terminated");
+                    return;
+                }
+                wv->call_registered_js("onCppEvent", {{"event", event}, {"source", "fire_event"}});
+                wv->resolve(id, {{"fired", true}, {"event", event}});
+            });
+        });
     }
 
     std::string object_name() const override { return "math"; }
@@ -361,116 +376,22 @@ int main(int argc, char* argv[]) {
 
     wv.bind_factory("Worker", WorkerService::create, WebViewWrapper::FactoryMode::Instance);
 
-    wv.set_html(R"HTML(
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>C++ / JS Binding Demo</title>
-    <style>
-        body { font-family: 'Segoe UI', sans-serif; margin: 20px; background: #1a1a2e; color: #e0e0e0; }
-        h1 { color: #00d4ff; }
-        .section { background: #16213e; padding: 15px; border-radius: 8px; margin: 10px 0; }
-        button { background: #0f3460; color: white; border: none; padding: 8px 16px;
-                 border-radius: 4px; cursor: pointer; margin: 4px; }
-        button:hover { background: #533483; }
-        .result { background: #0a0a1a; padding: 10px; border-radius: 4px; margin-top: 10px;
-                  font-family: monospace; white-space: pre-wrap; }
-        .loading { color: #ffcc00; } .success { color: #00ff88; } .error { color: #ff4444; }
-    </style>
-</head>
-<body>
-    <h1>C++ / JS Object Binding Demo</h1>
-
-    <div class="section">
-        <h2>1. 全局单例</h2>
-        <button onclick="testSyncAdd()">math.add(10, 20)</button>
-        <button onclick="testProperties()">math.version & math.pi</button>
-        <div id="sync-result" class="result"></div>
-    </div>
-
-    <div class="section">
-        <h2>2. JS new 创建 C++ 实例</h2>
-        <button onclick="testNewWorker()">new Worker("Alice", 5)</button>
-        <button onclick="testNewWorker2()">new Worker("Bob", 10)</button>
-        <button onclick="testWorkerDestroy()">destroy worker1</button>
-        <div id="worker-result" class="result"></div>
-    </div>
-
-    <div class="section">
-        <h2>3. 异步方法</h2>
-        <button onclick="testAsync()">file.read("config.json")</button>
-        <div id="async-result" class="result"></div>
-    </div>
-
-    <div class="section">
-        <h2>4. C++ calls JS</h2>
-        <button onclick="registerCallback()">Register JS callback</button>
-        <div id="cpp2js-result" class="result"></div>
-    </div>
-
-    <script>
-        var worker1, worker2;
-
-        function log(id, msg, cls) {
-            var el = document.getElementById(id);
-            el.className = 'result ' + (cls || '');
-            el.textContent += msg + '\n';
-        }
-
-        async function testSyncAdd() {
-            log('sync-result', 'math.add(10, 20) = ' + await window.__cpp__.math.add(10, 20), 'success');
-        }
-        async function testProperties() {
-            log('sync-result', 'math.version = "' + await window.__cpp__.math.version + '"', 'success');
-            log('sync-result', 'math.pi = ' + await window.__cpp__.math.pi, 'success');
-        }
-
-        async function testNewWorker() {
-            worker1 = await window.__cpp__.Worker("Alice", 5);
-            log('worker-result', 'Created worker1: ' + JSON.stringify(worker1), 'success');
-            log('worker-result', 'getName() = ' + await worker1.getName(), 'success');
-            log('worker-result', 'getPriority() = ' + await worker1.getPriority(), 'success');
-            log('worker-result', 'setPriority(8) = ' + await worker1.setPriority(8), 'success');
-
-            var result = await worker1.doWork("Build project");
-            log('worker-result', 'doWork() = ' + JSON.stringify(result, null, 2), 'success');
-        }
-
-        async function testNewWorker2() {
-            worker2 = await window.__cpp__.Worker("Bob", 10);
-            log('worker-result', 'Created worker2: ' + JSON.stringify(worker2), 'success');
-            var result = await worker2.doWork("Run tests");
-            log('worker-result', 'doWork() = ' + JSON.stringify(result, null, 2), 'success');
-        }
-
-        async function testWorkerDestroy() {
-            if (worker1) {
-                await worker1.__destroy__();
-                log('worker-result', 'worker1 destroyed manually', 'success');
-                worker1 = null;
-            }
-        }
-
-        async function testAsync() {
-            log('async-result', 'Calling file.read("config.json")...', 'loading');
-            try {
-                var r = await window.__cpp__.file.read("config.json");
-                log('async-result', 'file.read() = ' + JSON.stringify(r, null, 2), 'success');
-            } catch(e) { log('async-result', 'Error: ' + e.message, 'error'); }
-        }
-
-        function registerCallback() {
-            window.__register_cb__("onCppEvent", function(args) {
-                log('cpp2js-result', 'C++ called JS: ' + JSON.stringify(args), 'success');
-            });
-            log('cpp2js-result', 'Callback registered.', 'loading');
-        }
-    </script>
-</body>
-</html>
-    )HTML");
-
+    // 加载独立 HTML 文件（demo.html），无需在 C++ 中拼接 HTML/JS/CSS
+    char exe_path[MAX_PATH];
+    GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
+    std::string exe_dir(exe_path);
+    auto sep = exe_dir.find_last_of("/\\");
+    exe_dir = (sep == std::string::npos) ? "." : exe_dir.substr(0, sep);
+    std::string html_path = exe_dir + "/demo.html";
+    std::ifstream f(html_path);
+    if (f) {
+        std::stringstream ss;
+        ss << f.rdbuf();
+        wv.set_html(ss.str());
+    } else {
+        std::cerr << "Error: demo.html not found at " << html_path << std::endl;
+        return 1;
+    }
     wv.dispatch_task([&wv]() {
         std::this_thread::sleep_for(std::chrono::seconds(3));
         wv.call_registered_js("onCppEvent", {{"event", "startup"}, {"time", "2024-01-01"}});
