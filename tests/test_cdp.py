@@ -106,40 +106,50 @@ async def run_cdp_tests():
                 print(f"  [PASS] {name}")
             else:
                 failed += 1
-                print(f"  [FAIL] {name} - {detail}")
+                print(f"  [FAIL] {name} - {detail}".encode('ascii', 'replace').decode())
 
         # ========== Page Structure ==========
 
         # Page title
         cid, val = await evaluate(ws, cid, "document.title")
-        check("Page title", val == "C++ / JS Binding Demo",
+        check("Page title", val == "FlowyAIPC",
               f"got '{val}'")
 
-        # Sections
-        for s in ["全局单例", "JS new 创建 C++ 实例", "异步方法", "C++ calls JS"]:
-            cid, val = await evaluate(ws, cid,
-                f"document.body.innerHTML.includes('{s}')")
-            check(f"Section: {s}", val is True)
+        # FlowyAIPC structure: topbar tabs
+        cid, val = await evaluate(ws, cid,
+            "document.querySelector('.topbar-logo-text')?.textContent")
+        check("topbar logo text", val == "FlowyAIPC", f"got '{val}'")
 
-        # Buttons
-        for expected_text in [
-            "math.add(10, 20)",
-            "math.version & math.pi",
-            'new Worker("Alice", 5)',
-            'new Worker("Bob", 10)',
-            "destroy worker1",
-            'file.read("config.json")',
-            "Register JS callback",
-        ]:
-            cid, val = await evaluate(ws, cid,
-                f"Array.from(document.querySelectorAll('button')).some(b => b.textContent.trim() === '{expected_text}')")
-            check(f"Button: {expected_text}", val is True)
+        cid, val = await evaluate(ws, cid,
+            "document.querySelectorAll('.tab-btn').length")
+        check("topbar tabs count", val == 2, f"got {val}")
 
-        # Result divs
-        for d in ["sync-result", "worker-result", "async-result", "cpp2js-result"]:
-            cid, val = await evaluate(ws, cid,
-                f"document.getElementById('{d}') !== null")
-            check(f"Result div: #{d}", val is True)
+        cid, val = await evaluate(ws, cid,
+            "Array.from(document.querySelectorAll('.tab-btn')).map(b=>b.textContent.trim())")
+        check("topbar tabs labels", val == ["应用", "模型"], f"got {val}")
+
+        # Feature cards on app page
+        cid, val = await evaluate(ws, cid,
+            "document.querySelectorAll('.feature-card').length")
+        check("feature cards rendered", val >= 12, f"got {val}")
+
+        # New chat button (check by id, text may include emoji)
+        cid, val = await evaluate(ws, cid,
+            "document.getElementById('newChatBtn') !== null")
+        check("new chat button exists", val is True)
+
+        # Input box
+        cid, val = await evaluate(ws, cid,
+            "document.getElementById('inputBox') !== null")
+        check("input box exists", val is True)
+
+        # Model page (hidden initially)
+        cid, val = await evaluate(ws, cid,
+            "document.getElementById('modelPage') !== null")
+        check("model page exists", val is True)
+        cid, val = await evaluate(ws, cid,
+            "!document.getElementById('modelPage').classList.contains('active')")
+        check("model page hidden initially", val is True)
 
         # ========== __cpp__ Object Structure ==========
 
@@ -374,25 +384,42 @@ async def run_cdp_tests():
         check("Worker() default priority = 0",
               val.get("pri") == 0, f"got {val}")
 
-        # ========== Button Click DOM Updates ==========
+        # ========== UI Interaction Tests ==========
 
-        # math.add button
-        cid, _ = await evaluate(ws, cid,
-            "document.querySelector('button').click()")
+        # Feature card click - should add active class
+        cid, val = await evaluate(ws, cid,
+            "(function(){var c=document.querySelectorAll('.feature-card');c[1].click();return c[1].classList.contains('active');})()")
+        check("feature card click adds active class", val)
+
+        # Send message
+        cid, val = await evaluate(ws, cid,
+            "(function(){var i=document.getElementById('inputBox');i.value='hello';i.dispatchEvent(new Event('input'));document.getElementById('sendBtn').click();return 'sent';})()")
+        check("send message click works", val == "sent")
+        await asyncio.sleep(1.5)
+        cid, val = await evaluate(ws, cid,
+            "document.querySelectorAll('.msg.user').length")
+        check("user message appears in chat", val >= 1)
+
+        # Model tab - switch to model page
+        cid, val = await evaluate(ws, cid,
+            "(function(){document.querySelectorAll('.tab-btn')[1].click();return 'switched';})()")
+        check("model tab click switches tab", val == "switched")
         await asyncio.sleep(0.5)
         cid, val = await evaluate(ws, cid,
-            "var el = document.getElementById('sync-result'); el ? el.textContent : ''")
-        check("math.add click updates #sync-result",
-              len(val) > 0, f"got: {repr(val[:80])}")
+            "document.getElementById('modelPage').classList.contains('active')")
+        check("model page becomes active", val)
+        cid, val = await evaluate(ws, cid,
+            "document.querySelectorAll('.model-row').length")
+        check("model rows rendered", val >= 1)
 
-        # Register callback button
-        cid, _ = await evaluate(ws, cid,
-            "Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Register JS callback')?.click()")
+        # Model detail page - click ⋯ button
+        cid, val = await evaluate(ws, cid,
+            "(function(){document.querySelectorAll('[onclick*=showDetail]')[0].click();return 'detail opened';})()")
+        check("detail page opens", val == "detail opened")
         await asyncio.sleep(0.3)
         cid, val = await evaluate(ws, cid,
-            "var el = document.getElementById('cpp2js-result'); el ? el.textContent : ''")
-        check("Register callback click updates #cpp2js-result",
-              len(val) > 0, f"got: {repr(val[:80])}")
+            "document.getElementById('detailPage').classList.contains('open')")
+        check("detail page has open class", val)
 
         # ========== Async Method Existence ==========
 
