@@ -108,6 +108,36 @@ public:
 };
 
 // ============================================================
+// 配置服务：从磁盘读取 JSON 配置（演示 C++ 读文件能力）
+// 前端通过 file:// 协议无法 fetch 本地文件，改由 C++ 读取返回
+// ============================================================
+class ConfigService : public CppObject {
+public:
+    ConfigService(const std::string& base_dir) : m_base_dir(base_dir) {
+        bind_async("read", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
+            std::string name = args.empty() ? "" : args[0].get<std::string>();
+            std::string dir = m_base_dir;
+            wv->dispatch_task([id, name, dir, wv]() {
+                if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
+                std::ifstream f(dir + "/" + name);
+                if (!f) { wv->reject(id, "config not found: " + name); return; }
+                std::stringstream ss;
+                ss << f.rdbuf();
+                try {
+                    wv->resolve(id, json::parse(ss.str()));
+                } catch (const std::exception& e) {
+                    wv->reject(id, std::string("invalid json: ") + e.what());
+                }
+            });
+        });
+    }
+    std::string object_name() const override { return "config"; }
+
+private:
+    std::string m_base_dir;
+};
+
+// ============================================================
 // Worker 示例（支持 JS new 创建）
 // ============================================================
 class WorkerService : public CppObject {
@@ -371,27 +401,32 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    wv.bind_object(std::make_shared<MathService>());
-    wv.bind_object(std::make_shared<FileService>());
-
-    wv.bind_factory("Worker", WorkerService::create, WebViewWrapper::FactoryMode::Instance);
-
-    // 加载独立 HTML 文件（demo.html），无需在 C++ 中拼接 HTML/JS/CSS
+    // 计算 exe 所在目录（配置文件与前端资源均在此）
     char exe_path[MAX_PATH];
     GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
     std::string exe_dir(exe_path);
     auto sep = exe_dir.find_last_of("/\\");
     exe_dir = (sep == std::string::npos) ? "." : exe_dir.substr(0, sep);
+
+    wv.bind_object(std::make_shared<MathService>());
+    wv.bind_object(std::make_shared<FileService>());
+    wv.bind_object(std::make_shared<ConfigService>(exe_dir));
+
+    wv.bind_factory("Worker", WorkerService::create, WebViewWrapper::FactoryMode::Instance);
+
+    // 加载独立的 demo.html（CSS/JS 分离为 demo.css / demo.js）
+    // 用 file:// URL 导航，相对路径才能解析到同目录的 css/js
     std::string html_path = exe_dir + "/demo.html";
     std::ifstream f(html_path);
-    if (f) {
-        std::stringstream ss;
-        ss << f.rdbuf();
-        wv.set_html(ss.str());
-    } else {
+    if (!f) {
         std::cerr << "Error: demo.html not found at " << html_path << std::endl;
         return 1;
     }
+    f.close();
+    // 反斜杠转正斜杠，组装 file:// URL
+    std::string url_path = html_path;
+    for (auto& c : url_path) if (c == '\\') c = '/';
+    wv.navigate("file:///" + url_path);
     wv.dispatch_task([&wv]() {
         std::this_thread::sleep_for(std::chrono::seconds(3));
         wv.call_registered_js("onCppEvent", {{"event", "startup"}, {"time", "2024-01-01"}});

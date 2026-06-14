@@ -104,9 +104,18 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/WebView2Loader.dll
 )
 
-# 复制 demo.html 到输出目录（与 exe 同目录）
+# 复制前端文件 (demo.html / demo.css / demo.js) 到输出目录（与 exe 同目录）
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/src/demo.html"
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/demo.html
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/src/demo.css"
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/demo.css
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/src/demo.js"
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/demo.js
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/src/models.json"
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/models.json
 )

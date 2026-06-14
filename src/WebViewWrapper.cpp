@@ -4,6 +4,10 @@
 #include <sstream>
 #include <chrono>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 // 注意：webview 的 onReply 对成功和失败结果都执行 JSON.parse()。
 // 因此通过 webview_return 返回的错误结果也必须是合法 JSON（用 json(msg).dump()
 // 编码），否则 JS 端只会看到 "Failed to parse binding result as JSON" 而丢失真实错误。
@@ -62,6 +66,14 @@ WebViewWrapper::~WebViewWrapper() {
         webview_destroy(m_webview);
         m_webview = nullptr;
     }
+
+#ifdef _WIN32
+    // 关闭 Job 句柄：正常退出时这是兜底，触发 KILL_ON_JOB_CLOSE 终止残余子进程。
+    if (m_job) {
+        ::CloseHandle(static_cast<HANDLE>(m_job));
+        m_job = nullptr;
+    }
+#endif
 }
 
 // ============================================================
@@ -71,18 +83,37 @@ bool WebViewWrapper::init(const std::string& title, const std::string& url,
                           int width, int height, bool resizable,
                           int debug_port) {
 #ifdef _WIN32
-    if (debug_port > 0) {
-        std::string arg = "--remote-debugging-port=" + std::to_string(debug_port);
-        SetEnvironmentVariableA("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", arg.c_str());
+    // 创建 Job Object 并把当前（宿主）进程纳入，设置 KILL_ON_JOB_CLOSE：
+    // 宿主进程退出时，内核自动终止 Job 内所有进程——包括 webview_create
+    // 之后由 WebView2 派生的 msedgewebview2.exe 子进程，杜绝孤儿残留。
+    if (HANDLE job = ::CreateJobObjectW(nullptr, nullptr)) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        ::SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                                  &info, sizeof(info));
+        ::AssignProcessToJobObject(job, ::GetCurrentProcess());
+        m_job = job; // Job 句柄随进程生命周期持有，进程退出即关闭触发清理
     }
+
+    // WebView2 基于 Chromium，架构上无法单进程（--single-process 官方不支持，会崩溃）。
+    // 用命令行参数把子进程压到最少：关站点隔离 + 渲染进程限 1 + GPU 内联到 browser 进程。
+    std::string browser_args =
+        "--disable-features=site-per-process,IsolateOrigins,RendererCodeIntegrity"
+        " --renderer-process-limit=1"
+        " --in-process-gpu";
+    if (debug_port > 0) {
+        browser_args += " --remote-debugging-port=" + std::to_string(debug_port);
+    }
+    SetEnvironmentVariableA("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", browser_args.c_str());
 #endif
+
     m_webview = webview_create(1, nullptr);
     if (!m_webview) return false;
 
-    // webview_create 在当前线程建立消息循环；记录该线程为 GUI 线程。
     m_gui_thread_id = std::this_thread::get_id();
 
     webview_set_title(m_webview, title.c_str());
+
     webview_set_size(m_webview, width, height,
                      resizable ? WEBVIEW_HINT_NONE : WEBVIEW_HINT_FIXED);
 

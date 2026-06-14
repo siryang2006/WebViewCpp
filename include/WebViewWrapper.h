@@ -97,6 +97,13 @@ private:
     void* m_webview = nullptr;
     std::atomic<bool> m_terminated{false};
 
+#ifdef _WIN32
+    // Job Object：把宿主进程纳入 Job 并设 KILL_ON_JOB_CLOSE。
+    // 宿主进程一旦消失（正常退出/崩溃/被强杀），内核自动连同 Job 内
+    // 所有 WebView2 子进程一起终止，避免孤儿进程残留。HANDLE 存为 void*。
+    void* m_job = nullptr;
+#endif
+
     // GUI（消息循环）线程 id：webview_init/webview_create 等 API 只能在此线程调用。
     // inject_persistent 据此判断是否需要 dispatch 到 GUI 线程。
     std::thread::id m_gui_thread_id;
