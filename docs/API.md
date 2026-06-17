@@ -676,3 +676,187 @@ slow_add(1,2,fn)
 | 标识 | 一次性 `id`，调用后删除 | 字符串 `name`，可反复触发 |
 | 存储 | `window.__js_callbacks__[id]` | `window.__registered_cbs__[name]` |
 | 典型场景 | `fn(a,b,cb)` 异步结果回调 | C++ 主动推送事件给 JS |
+
+---
+
+## DownloadService 下载服务
+
+`DownloadService` 提供模型文件下载功能，支持断点续传、暂停、继续。
+
+### 文件
+
+- `src/DownloadService.h` - C++ 头文件
+- `src/DownloadService.cpp` - C++ 实现
+- `src/DownloadService.js` - JS 封装类
+
+### 绑定名称
+
+C++: `window.__cpp__.download`
+JS: `window.downloadService`
+
+### 方法对照
+
+| 方法 | C++ 类型 | JS 调用 | 说明 |
+|------|----------|---------|------|
+| `startDownload` | async | `startDownload(params, callback)` | 开始下载 |
+| `pauseDownload` | sync | `pauseDownload(modelId)` | 暂停下载 |
+| `resumeDownload` | sync | `resumeDownload(modelId)` | 继续下载 |
+| `cancelDownload` | sync | `cancelDownload(modelId)` | 取消下载 |
+| `getProgress` | sync | `getProgress(modelId)` | 获取进度 |
+| `getSpeed` | sync | `getSpeed(modelId)` | 获取速度 |
+
+### startDownload
+
+**C++ 签名:**
+```cpp
+void startDownload(const std::string& id, const json& args, WebViewWrapper* wv);
+```
+
+**参数 (JSON):**
+```json
+{
+    "url": "https://modelscope.cn/api/v1/models/...",
+    "savePath": "downloads/gemma-4-2b/model.gguf",
+    "modelId": "gemma-4-2b",
+    "totalSize": 2254857830,
+    "callback": "onDownloadProgress"
+}
+```
+
+**JS 调用:**
+```javascript
+window.downloadService.startDownload({
+    url: 'https://modelscope.cn/api/v1/models/...',
+    savePath: 'downloads/gemma-4-2b/model.gguf',
+    modelId: 'gemma-4-2b',
+    totalSize: 2254857830
+}, function(data) {
+    console.log(data.percentage, data.status);
+});
+```
+
+**进度回调数据:**
+```json
+{
+    "modelId": "gemma-4-2b",
+    "downloaded": 123456789,
+    "total": 2254857830,
+    "percentage": 5.47,
+    "speed": 10485760,
+    "status": "downloading"
+}
+```
+
+**status 状态值:**
+- `downloading` - 下载中
+- `paused` - 已暂停
+- `completed` - 下载完成
+- `cancelled` - 已取消
+- `error` - 下载错误
+
+### pauseDownload
+
+暂停指定模型的下载任务。
+
+**JS 调用:**
+```javascript
+const result = await window.downloadService.pauseDownload('gemma-4-2b');
+// result: {ok: true, data: {status: "paused", modelId: "gemma-4-2b"}}
+```
+
+### resumeDownload
+
+继续指定模型的下载任务。
+
+**JS 调用:**
+```javascript
+const result = await window.downloadService.resumeDownload('gemma-4-2b');
+// result: {ok: true, data: {status: "resumed", modelId: "gemma-4-2b"}}
+```
+
+### cancelDownload
+
+取消指定模型的下载任务。
+
+**JS 调用:**
+```javascript
+const result = await window.downloadService.cancelDownload('gemma-4-2b');
+// result: {ok: true, data: {status: "cancelled", modelId: "gemma-4-2b"}}
+```
+
+### getProgress
+
+获取下载进度。
+
+**JS 调用:**
+```javascript
+const result = await window.downloadService.getProgress('gemma-4-2b');
+// result: {ok: true, data: {downloaded: 123456789, total: 2254857830, percentage: 5.47, status: "downloading"}}
+```
+
+### getSpeed
+
+获取下载速度（字节/秒）。
+
+**JS 调用:**
+```javascript
+const result = await window.downloadService.getSpeed('gemma-4-2b');
+// result: {ok: true, data: {speed: 10485760}}
+```
+
+### models.json 配置
+
+```json
+{
+    "id": "gemma-4-2b",
+    "name": "Gemma 4 E2B",
+    "size": "2.1 GB",
+    "size_bytes": 2254857830,
+    "status": "available",
+    "download_url": "https://modelscope.cn/api/v1/models/LLM-Research/gemma-4-2b-gguf/resolve/main/gemma-4-2b-Q4_K_M.gguf"
+}
+```
+
+### 使用示例
+
+```javascript
+const dl = window.downloadService;
+
+// 下载模型
+function startDownload(id) {
+    const m = allModels.find(x => x.id === id);
+    if (!m || !m.download_url) return;
+    
+    m.status = 'downloading';
+    m.progress = 0;
+    renderModels();
+    
+    dl.startDownload({
+        url: m.download_url,
+        savePath: `downloads/${id}/${m.download_url.split('/').pop()}`,
+        modelId: id,
+        totalSize: m.size_bytes
+    }, function(data) {
+        m.progress = data.percentage;
+        if (data.status === 'completed') {
+            m.status = 'downloaded';
+        }
+        renderModels();
+    });
+}
+
+// 暂停下载
+function pauseDownload(id) {
+    dl.pauseDownload(id);
+}
+
+// 继续下载
+function resumeDownload(id) {
+    dl.resumeDownload(id);
+}
+
+// 取消下载
+function cancelDownload(id) {
+    dl.cancelDownload(id);
+}
+```

@@ -476,6 +476,156 @@ async def run_cdp_tests():
         check("fire_event returns ack to caller",
               val == '{"event":"x","fired":true}', f"got {val}")
 
+        # ========== DownloadService Tests ==========
+        # 验证 C++ DownloadService 对象存在
+        cid, val = await evaluate(ws, cid,
+            "typeof window.__cpp__.download")
+        check("window.__cpp__.download exists",
+              val == "object", f"got {val}")
+
+        # 验证 DownloadService 方法存在
+        cid, val = await evaluate(ws, cid,
+            "typeof window.__cpp__.download.startDownload")
+        check("download.startDownload is function",
+              val == "function", f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "typeof window.__cpp__.download.pauseDownload")
+        check("download.pauseDownload is function",
+              val == "function", f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "typeof window.__cpp__.download.resumeDownload")
+        check("download.resumeDownload is function",
+              val == "function", f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "typeof window.__cpp__.download.cancelDownload")
+        check("download.cancelDownload is function",
+              val == "function", f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "typeof window.__cpp__.download.getProgress")
+        check("download.getProgress is function",
+              val == "function", f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "typeof window.__cpp__.download.getSpeed")
+        check("download.getSpeed is function",
+              val == "function", f"got {val}")
+
+        # 验证 JS DownloadService 对象存在
+        cid, val = await evaluate(ws, cid,
+            "typeof window.downloadService")
+        check("window.downloadService exists",
+              val == "object", f"got {val}")
+
+        # 验证 JS DownloadService 方法存在
+        cid, val = await evaluate(ws, cid,
+            "typeof window.downloadService.startDownload")
+        check("downloadService.startDownload is function",
+              val == "function", f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "typeof window.downloadService.pauseDownload")
+        check("downloadService.pauseDownload is function",
+              val == "function", f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "typeof window.downloadService.resumeDownload")
+        check("downloadService.resumeDownload is function",
+              val == "function", f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "typeof window.downloadService.cancelDownload")
+        check("downloadService.cancelDownload is function",
+              val == "function", f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "typeof window.downloadService.getProgress")
+        check("downloadService.getProgress is function",
+              val == "function", f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "typeof window.downloadService.getSpeed")
+        check("downloadService.getSpeed is function",
+              val == "function", f"got {val}")
+
+        # 验证 pauseDownload 无任务时返回错误
+        cid, val = await evaluate(ws, cid,
+            '(async()=>{ try { var r = await window.__cpp__.download.pauseDownload({modelId:"nonexistent"}); return JSON.stringify(r); } catch(e) { return JSON.stringify({ok:false, error:String(e)}); } })()',
+            await_promise=True, timeout_ms=5000)
+        check("pauseDownload(no task) returns error",
+              '"ok":false' in val or '"ok": false' in val, f"got {val}")
+
+        # 验证 resumeDownload 无任务时返回错误
+        cid, val = await evaluate(ws, cid,
+            '(async()=>{ try { var r = await window.__cpp__.download.resumeDownload({modelId:"nonexistent"}); return JSON.stringify(r); } catch(e) { return JSON.stringify({ok:false, error:String(e)}); } })()',
+            await_promise=True, timeout_ms=5000)
+        check("resumeDownload(no task) returns error",
+              '"ok":false' in val or '"ok": false' in val, f"got {val}")
+
+        # 验证 cancelDownload 无任务时返回错误
+        cid, val = await evaluate(ws, cid,
+            '(async()=>{ try { var r = await window.__cpp__.download.cancelDownload({modelId:"nonexistent"}); return JSON.stringify(r); } catch(e) { return JSON.stringify({ok:false, error:String(e)}); } })()',
+            await_promise=True, timeout_ms=5000)
+        check("cancelDownload(no task) returns error",
+              '"ok":false' in val or '"ok": false' in val, f"got {val}")
+
+        # 验证 getProgress 无任务时返回错误
+        cid, val = await evaluate(ws, cid,
+            '(async()=>{ try { var r = await window.__cpp__.download.getProgress({modelId:"nonexistent"}); return JSON.stringify(r); } catch(e) { return JSON.stringify({ok:false, error:String(e)}); } })()',
+            await_promise=True, timeout_ms=5000)
+        check("getProgress(no task) returns error",
+              '"ok":false' in val or '"ok": false' in val, f"got {val}")
+
+        # 验证 getSpeed 无任务时返回错误
+        cid, val = await evaluate(ws, cid,
+            '(async()=>{ try { var r = await window.__cpp__.download.getSpeed({modelId:"nonexistent"}); return JSON.stringify(r); } catch(e) { return JSON.stringify({ok:false, error:String(e)}); } })()',
+            await_promise=True, timeout_ms=5000)
+        check("getSpeed(no task) returns error",
+              '"ok":false' in val or '"ok": false' in val, f"got {val}")
+
+        # 验证模型页下载按钮存在（如果有 available 状态的模型）
+        cid, val = await evaluate(ws, cid, """
+            document.querySelector('.tab-btn[data-tab="model"]').click();
+            'clicked'
+        """)
+        check("click model tab", val == "clicked", f"got {val}")
+
+        cid, val = await evaluate(ws, cid, """
+            new Promise(function(resolve) {
+                setTimeout(function() {
+                    var btns = document.querySelectorAll('.model-row .btn-blue');
+                    resolve(btns.length > 0 ? 'found' : 'none');
+                }, 500);
+            })
+        """, await_promise=True, timeout_ms=5000)
+        check("download button exists on model page",
+              val == "found", f"got {val}")
+
+        # 模拟点击下载按钮并验证状态变化
+        cid, val = await evaluate(ws, cid, """
+            new Promise(function(resolve) {
+                var btn = document.querySelector('.model-row .btn-blue');
+                if (!btn) { resolve('no button'); return; }
+                btn.click();
+                setTimeout(function() {
+                    var cells = document.querySelectorAll('.model-dl-speed');
+                    var status = cells.length > 0 ? cells[0].textContent.trim() : '';
+                    var pauseBtns = document.querySelectorAll('.model-row [onclick*="pauseDownload"]');
+                    resolve('dl_cells: ' + cells.length + ' pause_btns: ' + pauseBtns.length + ' status: ' + status);
+                }, 500);
+            })
+        """, await_promise=True, timeout_ms=5000)
+        check("click download button starts download",
+              'dl_cells: 1' in val or 'pause_btns: 1' in val, f"got {val}")
+
+        # Cancel any active download to clean up
+        await evaluate(ws, cid, """
+            window.__cpp__.download.cancelDownload({modelId: 'dolphin-gemma2-2b'}).catch(function(){});
+        """, await_promise=False, timeout_ms=2000)
+
         # ========== Section Summary ==========
         print(f"\nCDP Tests: {passed} passed, {failed} failed, "
               f"{passed + failed} total")

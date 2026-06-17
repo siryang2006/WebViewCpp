@@ -77,6 +77,7 @@ FetchContent_MakeAvailable(webview_lib)
 add_executable(${PROJECT_NAME} WIN32
     src/main.cpp
     src/WebViewWrapper.cpp
+    src/DownloadService.cpp
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -86,8 +87,11 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
     ${NUGET_PACKAGES_DIR}/nlohmann.json/build/native/include
     ${NUGET_PACKAGES_DIR}/Microsoft.Windows.ImplementationLibrary/include
+    ${CMAKE_SOURCE_DIR}/third_party/curl-8.19.0/include
+    ${CMAKE_SOURCE_DIR}/third_party/zlib-1.3.1/include
 )
 
 # 链接: webview::core_static + 本地 WebView2 Loader + Windows 系统库
@@ -95,13 +99,15 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 # 注意：使用 core_static 需要确保 WEBVIEW_STATIC 只在 webview 库编译时定义
 target_link_libraries(${PROJECT_NAME} PRIVATE
     webview::core_static
-)
-
-# 复制 WebView2Loader.dll 到输出目录
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${WEBVIEW2_DIR}/runtimes/win-x64/native/WebView2Loader.dll"
-        $<TARGET_FILE_DIR:${PROJECT_NAME}>/WebView2Loader.dll
+    ${CMAKE_SOURCE_DIR}/third_party/curl-8.19.0/lib/libcurl.lib
+    ${CMAKE_SOURCE_DIR}/third_party/zlib-1.3.1/lib/zlib.lib
+    ws2_32
+    wldap32
+    crypt32
+    normaliz
+    iphlpapi
+    secur32
+    advapi32
 )
 
 # 复制前端文件 (demo.html / demo.css / demo.js) 到输出目录（与 exe 同目录）
@@ -115,6 +121,9 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/src/demo.js"
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/demo.js
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/src/DownloadService.js"
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/DownloadService.js
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/src/models.json"
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/models.json

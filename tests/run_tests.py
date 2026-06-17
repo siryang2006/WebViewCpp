@@ -35,7 +35,7 @@ def run_tests():
         print("WARNING: Some tests FAILED")
         return False
 
-    # Verify expected test results (all 28 tests should be present)
+    # Verify expected test results (all 35 tests should be present)
     expected = [
         "math.add(10,20)",
         "math.multiply(6,7)",
@@ -65,6 +65,13 @@ def run_tests():
         "Worker.doWork_is_async",
         "CppObject.ok_result",
         "CppObject.error_result",
+        "download.object_name",
+        "download.startDownload_is_async",
+        "download.pauseDownload_no_task",
+        "download.resumeDownload_no_task",
+        "download.cancelDownload_no_task",
+        "download.getProgress_no_task",
+        "download.getSpeed_no_task",
     ]
 
     for name in expected:

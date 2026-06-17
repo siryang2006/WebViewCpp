@@ -215,6 +215,7 @@ function showDetail(id) {
 
   const isRunning = m.status === 'running';
   const isDownloaded = m.status === 'downloaded';
+  const isDownloading = m.status === 'downloading';
   const typeLabel = m.type.includes('Gemma') ? 'Gemma' : m.type.includes('Qwen') ? 'Qwen' : m.type.includes('Llama') ? 'Llama' : m.type;
 
   $('detailTitle').textContent = m.name;
@@ -223,7 +224,7 @@ function showDetail(id) {
   $('detailParam').textContent = m.param + 'B';
   $('detailSize').textContent = m.size;
   $('detailType').textContent = m.type;
-  $('detailCtx').textContent = m.ctx;
+  $('detailCtx').textContent = m.ctx || '8K';
 
   const heroIcon = $('detailHeroIcon');
   heroIcon.textContent = isRunning ? '🚀' : isDownloaded ? '✅' : '📦';
@@ -232,7 +233,7 @@ function showDetail(id) {
   $('detailTags').innerHTML = `
     <span class="detail-tag gb">${m.size}</span>
     <span class="detail-tag type">${typeLabel}</span>
-    <span class="detail-tag ctx">上下文 ${m.ctx}</span>
+    <span class="detail-tag ctx">上下文 ${m.ctx || '8K'}</span>
     <span class="detail-tag">${m.param}B 参数</span>`;
 
   const statusRow = $('detailStatusRow');
@@ -247,7 +248,7 @@ function showDetail(id) {
     statusRow.innerHTML = '<span>未下载</span>';
   }
 
-  $('detailPath').textContent = `C:\\Users\\Public\\flowyaipc\\models\\${m.id}`;
+  $('detailPath').textContent = m.gguf_path || `models/${m.id}`;
 
   // 上下文滑块
   const ctxSection = $('detailCtxSection');
@@ -255,7 +256,8 @@ function showDetail(id) {
   const ctxVal = $('detailCtxVal');
   if (isDownloaded || isRunning) {
     ctxSection.style.display = '';
-    const pct = m.ctx === '8K' ? 25 : m.ctx === '32K' ? 50 : m.ctx === '64K' ? 75 : m.ctx === '128K' ? 90 : 50;
+    var ctx = m.ctx || '8K';
+    const pct = ctx === '8K' ? 25 : ctx === '32K' ? 50 : ctx === '64K' ? 75 : ctx === '128K' ? 90 : 50;
     ctxSlider.value = pct;
     ctxVal.textContent = pct + '%';
   } else {
@@ -267,15 +269,23 @@ function showDetail(id) {
   if (isRunning) {
     actionBtn.className = 'btn btn-red';
     actionBtn.textContent = '■ 停止';
-    actionBtn.onclick = () => { stopModel(id); closeDetail(); };
+    actionBtn.onclick = function() { stopModel(id); closeDetail(); };
   } else if (isDownloaded) {
     actionBtn.className = 'btn btn-green';
     actionBtn.textContent = '▶ 启动';
-    actionBtn.onclick = () => { m.status = 'running'; renderModels(); updateServiceStatus(true); closeDetail(); };
+    actionBtn.onclick = function() { m.status = 'running'; renderModels(); updateServiceStatus(true); closeDetail(); };
+  } else if (isDownloading) {
+    actionBtn.className = 'btn btn-yellow';
+    actionBtn.textContent = '⏸ 暂停';
+    actionBtn.onclick = function() { pauseDownload(id); closeDetail(); };
+  } else if (m.status === 'paused') {
+    actionBtn.className = 'btn btn-blue';
+    actionBtn.textContent = '▶ 继续';
+    actionBtn.onclick = function() { resumeDownload(id); closeDetail(); };
   } else {
     actionBtn.className = 'btn btn-blue';
     actionBtn.textContent = '⬇ 下载';
-    actionBtn.onclick = () => { startDownload(id); closeDetail(); };
+    actionBtn.onclick = function() { startDownload(id); closeDetail(); };
   }
 
   $('detailPage').classList.add('open');
@@ -308,8 +318,6 @@ const filterState = {
   param: 'all',   // all | small | medium | large
   type: 'all',    // all | gemma | qwen | llama | other
 };
-let downloadIntervals = {};
-
 // 渲染列表
 function renderModels() {
   const q = modelSearchInput.value.trim().toLowerCase();
@@ -353,8 +361,19 @@ function renderModels() {
         ${isDownloaded ? `<button class="btn btn-green" onclick="showConfig('${m.id}')">▶ 立即启动</button>
           <button class="btn btn-ghost" onclick="deleteModel('${m.id}')" title="删除">🗑</button>` : ''}
         ${isDownloading ? `
-          <div class="model-dl-bar"><div class="model-dl-fill" id="dlbar-${m.id}" style="width:${m.progress}%"></div></div>
-          <button class="btn btn-ghost" onclick="cancelDownload('${m.id}')">取消</button>` : ''}
+          <div class="model-dl-info">
+            <div class="model-dl-bar"><div class="model-dl-fill" id="dlbar-${m.id}" style="width:${m.progress}%"></div></div>
+            <div class="model-dl-speed">${formatSpeed(m.speed || 0)}</div>
+          </div>
+          <button class="btn btn-ghost" onclick="pauseDownload('${m.id}')" title="暂停">⏸</button>
+          <button class="btn btn-ghost" onclick="cancelDownload('${m.id}')" title="取消">✕</button>` : ''}
+        ${m.status === 'paused' ? `
+          <div class="model-dl-info">
+            <div class="model-dl-bar"><div class="model-dl-fill" id="dlbar-${m.id}" style="width:${m.progress}%"></div></div>
+            <div class="model-dl-speed">已暂停</div>
+          </div>
+          <button class="btn btn-ghost" onclick="resumeDownload('${m.id}')" title="继续">▶</button>
+          <button class="btn btn-ghost" onclick="cancelDownload('${m.id}')" title="取消">✕</button>` : ''}
         ${isAvailable ? `<button class="btn btn-blue" onclick="startDownload('${m.id}')">⬇ 下载模型</button>` : ''}
         <button class="btn btn-ghost" onclick="showDetail('${m.id}')" title="详情">⋯</button>
       </div>
@@ -362,42 +381,165 @@ function renderModels() {
   }).join('');
 }
 
-// 下载
+// 下载服务
+var dl = window.downloadService;
+
+function formatSpeed(bytesPerSec) {
+  if (bytesPerSec >= 1073741824) return (bytesPerSec / 1073741824).toFixed(1) + ' GB/s';
+  if (bytesPerSec >= 1048576) return (bytesPerSec / 1048576).toFixed(1) + ' MB/s';
+  if (bytesPerSec >= 1024) return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
+  return bytesPerSec + ' B/s';
+}
+
 function startDownload(id) {
-  const m = allModels.find(x => x.id === id);
-  if (!m) return;
+  var m = allModels.find(function(x) { return x.id === id; });
+  if (!m || !m.download_url) return;
+
   m.status = 'downloading';
   m.progress = 0;
+  m.downloaded = 0;
+  m.speed = 0;
   renderModels();
-  downloadIntervals[id] = setInterval(() => {
-    m.progress = Math.min(m.progress + 6 + Math.random() * 8, 100);
-    const bar = document.getElementById('dlbar-' + id);
-    if (bar) bar.style.width = m.progress + '%';
-    if (m.progress >= 100) {
-      clearInterval(downloadIntervals[id]);
-      delete downloadIntervals[id];
-      setTimeout(() => { m.status = 'downloaded'; renderModels(); }, 200);
+
+  dl.startDownload({
+    url: m.download_url,
+    savePath: m.gguf_path || 'downloads/' + id + '/' + m.download_url.split('/').pop(),
+    modelId: id,
+    totalSize: m.size_bytes || 0
+  }, function(data) {
+    m.progress = data.percentage || 0;
+    m.downloaded = data.downloaded || 0;
+    m.total = data.total || 0;
+    m.speed = data.speed || 0;
+
+    if (data.status === 'completed') {
+      m.status = 'downloaded';
+      m.progress = 100;
+    } else if ((data.status === 'cancelled' || data.status === 'error') && !m._pausing) {
+      m.status = 'available';
+      m.progress = 0;
+      m.downloaded = 0;
+      m.speed = 0;
     }
-  }, 250);
+    renderModels();
+  });
+}
+
+function pauseDownload(id) {
+  var m = allModels.find(function(x) { return x.id === id; });
+  if (!m) return;
+  m.status = 'paused';
+  m._pausing = true;
+  renderModels();
+  dl.pauseDownload(id).then(function(r) {
+    m._pausing = false;
+    if (r && r.ok === false) {
+      m.status = 'downloading';
+      renderModels();
+    }
+  }).catch(function() {
+    m._pausing = false;
+    m.status = 'downloading';
+    renderModels();
+  });
+}
+
+function resumeDownload(id) {
+  var m = allModels.find(function(x) { return x.id === id; });
+  if (!m) return;
+  dl.resumeDownload(id).then(function(r) {
+    if (r && r.ok === false) {
+      m.status = 'paused';
+    } else {
+      m.status = 'downloading';
+    }
+    renderModels();
+  }).catch(function() {
+    m.status = 'paused';
+    renderModels();
+  });
+  m.status = 'downloading';
+  renderModels();
 }
 
 function cancelDownload(id) {
-  clearInterval(downloadIntervals[id]);
-  delete downloadIntervals[id];
-  const m = allModels.find(x => x.id === id);
-  if (m) { m.status = 'available'; m.progress = 0; }
+  dl.cancelDownload(id);
+  var m = allModels.find(function(x) { return x.id === id; });
+  if (m) {
+    m.status = 'available';
+    m.progress = 0;
+    m.downloaded = 0;
+    m.speed = 0;
+  }
   renderModels();
 }
 
+function showAddModel() {
+  $('addModelId').value = '';
+  $('addModelName').value = '';
+  $('addModelUrl').value = '';
+  $('addModelDesc').value = '';
+  $('addModelSize').value = '';
+  $('addModelSizeBytes').value = '';
+  $('addModelParam').value = '';
+  $('addModelType').value = 'Other';
+  $('addModelCtx').value = '32K';
+  $('addModelOverlay').classList.add('show');
+}
+
+$('addModelBtn').addEventListener('click', showAddModel);
+$('addModelCancel').addEventListener('click', function() {
+  $('addModelOverlay').classList.remove('show');
+});
+$('addModelConfirm').addEventListener('click', function() {
+  var id = $('addModelId').value.trim();
+  var name = $('addModelName').value.trim();
+  var url = $('addModelUrl').value.trim();
+  if (!id || !url) { alert('模型 ID 和下载 URL 为必填项'); return; }
+  var model = {
+    id: id,
+    name: name || id,
+    download_url: url,
+    desc: $('addModelDesc').value.trim() || '',
+    size: $('addModelSize').value.trim() || 'Unknown',
+    size_bytes: parseInt($('addModelSizeBytes').value) || 0,
+    param: parseFloat($('addModelParam').value) || 0,
+    type: $('addModelType').value,
+    ctx: $('addModelCtx').value
+  };
+  window.__cpp__.config.addModel(model).then(function(data) {
+    $('addModelOverlay').classList.remove('show');
+    allModels = (data.models || []).map(function(m) {
+      m.progress = (m.status === 'downloaded' || m.status === 'running') ? 100 : 0;
+      return m;
+    });
+    renderModels();
+  }).catch(function(e) {
+    alert('添加模型失败: ' + e);
+  });
+});
+
 function deleteModel(id) {
-  const m = allModels.find(x => x.id === id);
-  if (m) { m.status = 'available'; m.progress = 0; }
-  renderModels();
+  var m = allModels.find(function(x) { return x.id === id; });
+  if (!m) return;
+  dl.cancelDownload(id);
+  if (!confirm('确定要删除模型「' + m.name + '」吗？将从配置中移除并删除本地文件。')) return;
+  var promises = [];
+  if (m.gguf_path) {
+    promises.push(window.__cpp__.config.deleteFile(m.gguf_path).catch(function() {}));
+  }
+  promises.push(window.__cpp__.config.deleteModel(id));
+  Promise.all(promises).then(function() {
+    allModels = allModels.filter(function(x) { return x.id !== id; });
+    renderModels();
+  }).catch(function(e) {
+    alert('删除失败: ' + e);
+  });
 }
 
 function stopModel(id) {
-  const m = allModels.find(x => x.id === id);
-  if (m) { m.status = 'downloaded'; }
+  var m = allModels.find(function(x) { return x.id === id; });
+  if (m) m.status = 'downloaded';
   renderModels();
 }
 

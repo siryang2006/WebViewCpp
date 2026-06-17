@@ -1,94 +1,52 @@
 {
   "models": [
     {
-      "id": "gemma-4-2b",
-      "name": "Gemma 4 E2B",
-      "desc": "Google Gemma 4 家族，2B 参数高效模型",
-      "size": "2.1 GB",
-      "type": "Gemma 4",
+      "id": "dolphin-gemma2-2b",
+      "name": "Dolphin Gemma2 2B",
+      "desc": "认知计算 Dolphin，2B 参数 Q4_K_M 量化",
+      "size": "1.6 GB",
+      "size_bytes": 1708586656,
+      "type": "Gemma 2",
       "param": 2,
-      "status": "running"
-    },
-    {
-      "id": "gemma-4-7b",
-      "name": "Gemma 4 7B",
-      "desc": "Google Gemma 4，7B 参数通用模型",
-      "size": "7.2 GB",
-      "type": "Gemma 4",
-      "param": 7,
-      "status": "downloaded"
+      "ctx": "8K",
+      "download_url": "https://modelscope.cn/models/WDQW123/dolphin-2.9.4-gemma2-2b-Q4_K_M-GGUF/resolve/master/dolphin-2.9.4-gemma2-2b-q4_k_m.gguf",
+      "gguf_path": "downloads/dolphin-gemma2-2b/dolphin-2.9.4-gemma2-2b-q4_k_m.gguf"
     },
     {
       "id": "qwen-2.5-7b",
       "name": "Qwen 2.5 7B",
-      "desc": "阿里通义千问，7B 参数中文优化模型",
-      "size": "7.4 GB",
+      "desc": "阿里通义千问，7B 参数 Q4_K_M 量化",
+      "size": "4.4 GB",
+      "size_bytes": 4683073536,
       "type": "Qwen 2.5",
       "param": 7,
-      "status": "downloaded"
-    },
-    {
-      "id": "qwen-2.5-14b",
-      "name": "Qwen 2.5 14B",
-      "desc": "阿里通义千问，14B 参数增强版",
-      "size": "14.8 GB",
-      "type": "Qwen 2.5",
-      "param": 14,
-      "status": "available"
+      "ctx": "32K",
+      "download_url": "https://modelscope.cn/models/qwen/Qwen2.5-7B-Instruct-GGUF/resolve/master/qwen2.5-7b-instruct-q4_k_m.gguf",
+      "gguf_path": "downloads/qwen-2.5-7b/qwen2.5-7b-instruct-q4_k_m.gguf"
     },
     {
       "id": "qwen-2.5-1.5b",
       "name": "Qwen 2.5 1.5B",
-      "desc": "阿里通义千问，1.5B 超轻量模型",
-      "size": "1.6 GB",
+      "desc": "阿里通义千问，1.5B 超轻量 Q4_K_M 量化",
+      "size": "1.0 GB",
+      "size_bytes": 1073741824,
       "type": "Qwen 2.5",
       "param": 1.5,
-      "status": "available"
+      "ctx": "32K",
+      "download_url": "https://modelscope.cn/models/qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "gguf_path": "downloads/qwen-2.5-1.5b/qwen2.5-1.5b-instruct-q4_k_m.gguf"
     },
     {
-      "id": "llama-3-8b",
-      "name": "Llama 3 8B",
-      "desc": "Meta Llama 3，8B 参数开源旗舰",
-      "size": "8.0 GB",
-      "type": "Llama 3",
-      "param": 8,
-      "status": "available"
-    },
-    {
-      "id": "llama-3-70b",
-      "name": "Llama 3 70B",
-      "desc": "Meta Llama 3，70B 参数顶配版",
-      "size": "72.4 GB",
-      "type": "Llama 3",
-      "param": 70,
-      "status": "available"
-    },
-    {
-      "id": "mistral-7b",
-      "name": "Mistral 7B",
-      "desc": "Mistral AI，7B 高效专家混合模型",
-      "size": "7.3 GB",
-      "type": "Mistral",
-      "param": 7,
-      "status": "available"
-    },
-    {
-      "id": "deepseek-7b",
-      "name": "DeepSeek 7B",
-      "desc": "DeepSeek，7B 参数数学代码优化",
-      "size": "7.1 GB",
-      "type": "DeepSeek",
-      "param": 7,
-      "status": "downloaded"
-    },
-    {
-      "id": "phi-3-mini",
-      "name": "Phi-3 Mini",
-      "desc": "微软 Phi-3，3.8B 超小参数高质量模型",
-      "size": "4.0 GB",
-      "type": "Phi-3",
-      "param": 3.8,
-      "status": "available"
+      "id": "llama-3.2-1b",
+      "name": "Llama 3.2 1B",
+      "desc": "Meta Llama 3.2，1B 参数 Q4_K_M 量化",
+      "size": "0.8 GB",
+      "size_bytes": 858993459,
+      "type": "Llama 3.2",
+      "param": 1,
+      "ctx": "8K",
+      "download_url": "https://modelscope.cn/models/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/master/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+      "gguf_path": "downloads/llama-3.2-1b/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
     }
   ]
 }

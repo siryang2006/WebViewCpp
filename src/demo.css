@@ -1156,6 +1156,20 @@ html, body {
   margin-top: 24px;
 }
 .config-actions .btn { flex: 1; justify-content: center; }
+.add-model-input {
+  flex: 1; min-width: 0;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  outline: none;
+  transition: var(--transition);
+}
+.add-model-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+.add-model-input::placeholder { color: var(--text-muted); }
+select.add-model-input { cursor: pointer; }
 
 /* ================================================================
    模型详情页

@@ -1,10 +1,12 @@
 #include "WebViewWrapper.h"
+#include "DownloadService.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <sys/stat.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -114,17 +116,136 @@ public:
 class ConfigService : public CppObject {
 public:
     ConfigService(const std::string& base_dir) : m_base_dir(base_dir) {
+        bind_async("deleteFile", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
+            std::string path = args.is_array() && args.size() > 0 ? args[0].get<std::string>() : "";
+            std::string dir = m_base_dir;
+            wv->dispatch_task([id, path, dir, wv]() {
+                if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
+                if (path.empty()) { wv->reject(id, "path is required"); return; }
+                std::string fullPath = dir + "/" + path;
+                int ret = remove(fullPath.c_str());
+                if (ret == 0) {
+                    wv->resolve(id, {{"ok", true}, {"path", path}});
+                } else {
+                    wv->reject(id, "Failed to delete: " + path);
+                }
+            });
+        });
+
+        bind_async("addModel", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
+            json model = args.is_array() && args.size() > 0 ? args[0] : args;
+            std::string dir = m_base_dir;
+            wv->dispatch_task([id, model, dir, wv]() mutable {
+                if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
+                std::string configPath = dir + "/models.json";
+                std::ifstream f(configPath);
+                if (!f) { wv->reject(id, "models.json not found"); return; }
+                std::stringstream ss;
+                ss << f.rdbuf();
+                f.close();
+                try {
+                    json data = json::parse(ss.str());
+                    if (!data.contains("models") || !data["models"].is_array()) {
+                        data["models"] = json::array();
+                    }
+                    // Check for duplicate id
+                    std::string newId = model.value("id", "");
+                    for (auto& m : data["models"]) {
+                        if (m.value("id", "") == newId) {
+                            wv->reject(id, "Model id already exists: " + newId);
+                            return;
+                        }
+                    }
+                    // Set defaults
+                    if (!model.contains("status")) model["status"] = "available";
+                    if (!model.contains("size")) model["size"] = "Unknown";
+                    if (!model.contains("size_bytes")) model["size_bytes"] = 0;
+                    if (!model.contains("param")) model["param"] = 0;
+                    if (!model.contains("type")) model["type"] = "Other";
+                    if (!model.contains("desc")) model["desc"] = "";
+                    if (!model.contains("ctx")) model["ctx"] = "32K";
+                    if (!model.contains("gguf_path")) {
+                        std::string filename = model.value("download_url", "");
+                        auto pos = filename.find_last_of("/");
+                        if (pos != std::string::npos) filename = filename.substr(pos + 1);
+                        model["gguf_path"] = "downloads/" + newId + "/" + filename;
+                    }
+                    data["models"].push_back(model);
+                    std::ofstream of(configPath);
+                    of << data.dump(2);
+                    of.close();
+                    wv->resolve(id, data);
+                } catch (const std::exception& e) {
+                    wv->reject(id, std::string("failed: ") + e.what());
+                }
+            });
+        });
+
+        bind_async("deleteModel", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
+            std::string modelId = args.is_array() && args.size() > 0 ? args[0].get<std::string>() : "";
+            std::string dir = m_base_dir;
+            wv->dispatch_task([id, modelId, dir, wv]() {
+                if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
+                std::string configPath = dir + "/models.json";
+                std::ifstream f(configPath);
+                if (!f) { wv->reject(id, "models.json not found"); return; }
+                std::stringstream ss;
+                ss << f.rdbuf();
+                f.close();
+                try {
+                    json data = json::parse(ss.str());
+                    if (!data.contains("models") || !data["models"].is_array()) {
+                        wv->reject(id, "No models array");
+                        return;
+                    }
+                    auto& models = data["models"];
+                    bool found = false;
+                    for (auto it = models.begin(); it != models.end(); ++it) {
+                        if (it->value("id", "") == modelId) {
+                            models.erase(it);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        wv->reject(id, "Model not found: " + modelId);
+                        return;
+                    }
+                    std::ofstream of(configPath);
+                    of << data.dump(2);
+                    of.close();
+                    wv->resolve(id, {{"ok", true}});
+                } catch (const std::exception& e) {
+                    wv->reject(id, std::string("failed: ") + e.what());
+                }
+            });
+        });
+
         bind_async("read", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
             std::string name = args.empty() ? "" : args[0].get<std::string>();
             std::string dir = m_base_dir;
-            wv->dispatch_task([id, name, dir, wv]() {
+            wv->dispatch_task([id, name, dir, this, wv]() {
                 if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
                 std::ifstream f(dir + "/" + name);
                 if (!f) { wv->reject(id, "config not found: " + name); return; }
                 std::stringstream ss;
                 ss << f.rdbuf();
                 try {
-                    wv->resolve(id, json::parse(ss.str()));
+                    json data = json::parse(ss.str());
+                    // 动态检测已下载的模型：检查 gguf_path 文件是否存在
+                    if (data.contains("models") && data["models"].is_array()) {
+                        for (auto& m : data["models"]) {
+                            if (m.contains("gguf_path") && m["gguf_path"].is_string()) {
+                                std::string savePath = dir + "/" + m["gguf_path"].get<std::string>();
+                                struct stat st;
+                                bool exists = (stat(savePath.c_str(), &st) == 0 && st.st_size > 0);
+                                m["status"] = exists ? "downloaded" : "available";
+                            } else {
+                                m["status"] = "available";
+                            }
+                        }
+                    }
+                    wv->resolve(id, data);
                 } catch (const std::exception& e) {
                     wv->reject(id, std::string("invalid json: ") + e.what());
                 }
@@ -349,6 +470,50 @@ static bool run_cpp_tests() {
         else { report("CppObject.error_result", false, "Unexpected: " + r.dump()); failed++; }
     } catch (const std::exception& e) { report("CppObject.error_result", false, e.what()); failed++; }
 
+    // ============================================================
+    // DownloadService 测试
+    // ============================================================
+    auto download = std::make_shared<DownloadService>(".");
+
+    try {
+        json r = download->object_name();
+        if (r == "download") { report("download.object_name", true, "got " + r.dump()); passed++; }
+        else { report("download.object_name", false, "Expected \"download\", got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("download.object_name", false, e.what()); failed++; }
+
+    try { download->invoke_sync("startDownload", {}); report("download.startDownload_is_async", false, "no exception"); failed++; }
+    catch (const std::exception& e) { report("download.startDownload_is_async", true, std::string("caught: ") + e.what()); passed++; }
+
+    try {
+        json r = download->invoke_sync("pauseDownload", {{"modelId", "nonexistent"}});
+        if (r["ok"] == false) { report("download.pauseDownload_no_task", true, "got error: " + r.dump()); passed++; }
+        else { report("download.pauseDownload_no_task", false, "Expected error, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("download.pauseDownload_no_task", false, e.what()); failed++; }
+
+    try {
+        json r = download->invoke_sync("resumeDownload", {{"modelId", "nonexistent"}});
+        if (r["ok"] == false) { report("download.resumeDownload_no_task", true, "got error: " + r.dump()); passed++; }
+        else { report("download.resumeDownload_no_task", false, "Expected error, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("download.resumeDownload_no_task", false, e.what()); failed++; }
+
+    try {
+        json r = download->invoke_sync("cancelDownload", {{"modelId", "nonexistent"}});
+        if (r["ok"] == false) { report("download.cancelDownload_no_task", true, "got error: " + r.dump()); passed++; }
+        else { report("download.cancelDownload_no_task", false, "Expected error, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("download.cancelDownload_no_task", false, e.what()); failed++; }
+
+    try {
+        json r = download->invoke_sync("getProgress", {{"modelId", "nonexistent"}});
+        if (r["ok"] == false) { report("download.getProgress_no_task", true, "got error: " + r.dump()); passed++; }
+        else { report("download.getProgress_no_task", false, "Expected error, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("download.getProgress_no_task", false, e.what()); failed++; }
+
+    try {
+        json r = download->invoke_sync("getSpeed", {{"modelId", "nonexistent"}});
+        if (r["ok"] == false) { report("download.getSpeed_no_task", true, "got error: " + r.dump()); passed++; }
+        else { report("download.getSpeed_no_task", false, "Expected error, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("download.getSpeed_no_task", false, e.what()); failed++; }
+
     std::cout << "Passed: " << passed << ", Failed: " << failed << ", Total: " << (passed + failed) << std::endl;
     std::cout << "=== End C++ Tests ===" << std::endl;
     return failed == 0;
@@ -411,6 +576,10 @@ int main(int argc, char* argv[]) {
     wv.bind_object(std::make_shared<MathService>());
     wv.bind_object(std::make_shared<FileService>());
     wv.bind_object(std::make_shared<ConfigService>(exe_dir));
+
+    auto downloadSvc = std::make_shared<DownloadService>(exe_dir);
+    wv.bind_object(downloadSvc);
+    downloadSvc->setWebView(&wv);
 
     wv.bind_factory("Worker", WorkerService::create, WebViewWrapper::FactoryMode::Instance);
 
