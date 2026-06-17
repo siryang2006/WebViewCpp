@@ -519,22 +519,41 @@ $('addModelConfirm').addEventListener('click', function() {
   });
 });
 
+function confirmDialog(msg, onOk) {
+  $('confirmMessage').textContent = msg;
+  $('confirmOverlay').classList.add('show');
+  var okHandler = function() {
+    $('confirmOverlay').classList.remove('show');
+    $('confirmOk').removeEventListener('click', okHandler);
+    $('confirmCancel').removeEventListener('click', cancelHandler);
+    onOk();
+  };
+  var cancelHandler = function() {
+    $('confirmOverlay').classList.remove('show');
+    $('confirmOk').removeEventListener('click', okHandler);
+    $('confirmCancel').removeEventListener('click', cancelHandler);
+  };
+  $('confirmOk').addEventListener('click', okHandler);
+  $('confirmCancel').addEventListener('click', cancelHandler);
+}
+
 function deleteModel(id) {
   var m = allModels.find(function(x) { return x.id === id; });
   if (!m) return;
   dl.cancelDownload(id);
-  if (!confirm('确定要删除模型「' + m.name + '」的本地文件吗？')) return;
-  if (m.gguf_path) {
-    window.__cpp__.config.deleteFile(m.gguf_path).then(function() {
-      m.status = 'available';
-      m.progress = 0;
-      m.downloaded = 0;
-      m.speed = 0;
-      renderModels();
-    }).catch(function(e) {
-      alert('删除本地文件失败: ' + e);
-    });
-  }
+  confirmDialog('确定要删除「' + m.name + '」的本地文件吗？', function() {
+    if (m.gguf_path) {
+      window.__cpp__.config.deleteFile(m.gguf_path).then(function() {
+        m.status = 'available';
+        m.progress = 0;
+        m.downloaded = 0;
+        m.speed = 0;
+        renderModels();
+      }).catch(function(e) {
+        alert('删除本地文件失败: ' + e);
+      });
+    }
+  });
 }
 
 function stopModel(id) {

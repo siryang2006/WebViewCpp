@@ -460,6 +460,18 @@
 </div>
 
 <!-- 启动配置弹窗 -->
+<!-- 确认弹窗 -->
+<div class="config-overlay" id="confirmOverlay">
+  <div class="config-panel" style="width:380px;text-align:center;">
+    <div class="config-title" id="confirmTitle">确认</div>
+    <p style="margin:16px 0 24px;font-size:14px;color:var(--text-secondary);line-height:1.5;" id="confirmMessage"></p>
+    <div class="config-actions" style="justify-content:center;">
+      <button class="btn btn-secondary" id="confirmCancel">取消</button>
+      <button class="btn btn-red" id="confirmOk">确定</button>
+    </div>
+  </div>
+</div>
+
 <div class="config-overlay" id="configOverlay">
   <div class="config-panel">
     <div class="config-title">🚀 启动模型</div>
