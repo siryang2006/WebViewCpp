@@ -523,18 +523,18 @@ function deleteModel(id) {
   var m = allModels.find(function(x) { return x.id === id; });
   if (!m) return;
   dl.cancelDownload(id);
-  if (!confirm('确定要删除模型「' + m.name + '」吗？将从配置中移除并删除本地文件。')) return;
-  var promises = [];
+  if (!confirm('确定要删除模型「' + m.name + '」的本地文件吗？')) return;
   if (m.gguf_path) {
-    promises.push(window.__cpp__.config.deleteFile(m.gguf_path).catch(function() {}));
+    window.__cpp__.config.deleteFile(m.gguf_path).then(function() {
+      m.status = 'available';
+      m.progress = 0;
+      m.downloaded = 0;
+      m.speed = 0;
+      renderModels();
+    }).catch(function(e) {
+      alert('删除本地文件失败: ' + e);
+    });
   }
-  promises.push(window.__cpp__.config.deleteModel(id));
-  Promise.all(promises).then(function() {
-    allModels = allModels.filter(function(x) { return x.id !== id; });
-    renderModels();
-  }).catch(function(e) {
-    alert('删除失败: ' + e);
-  });
 }
 
 function stopModel(id) {
