@@ -681,12 +681,12 @@ void WebViewWrapper::call_js(const std::string& func_name, const json& args,
        << "    var result = window[" << json(func_name).dump() << "](" << args.dump(-1, ' ', true) << ");\n"
        << "    if (result && typeof result.then === 'function') {\n"
        << "      result.then(function(r) {\n"
-       << "        window.__cpp_result__('" << id << "', true, JSON.stringify(r));\n"
+       << "        window.__cpp_result__('" << id << "', true, JSON.stringify(r === undefined ? null : r));\n"
        << "      }).catch(function(e) {\n"
        << "        window.__cpp_result__('" << id << "', false, JSON.stringify(e.message || String(e)));\n"
        << "      });\n"
        << "    } else {\n"
-       << "      window.__cpp_result__('" << id << "', true, JSON.stringify(result));\n"
+       << "      window.__cpp_result__('" << id << "', true, JSON.stringify(result === undefined ? null : result));\n"
        << "    }\n"
        << "  } catch(e) {\n"
        << "    window.__cpp_result__('" << id << "', false, JSON.stringify(e.message || String(e)));\n"
@@ -756,17 +756,25 @@ bool WebViewWrapper::setup_js_bridge() {
                 bool success = data[1].get<bool>();
                 std::string value = data[2].get<std::string>();
 
-                std::lock_guard<std::mutex> lock(self->m_callback_mutex);
-                auto it = self->m_pending_callbacks.find(id);
-                if (it != self->m_pending_callbacks.end()) {
-                    if (success) {
-                        if (it->second.on_result)
-                            it->second.on_result(json::parse(value));
-                    } else {
-                        if (it->second.on_error)
-                            it->second.on_error(value);
+                // 锁内取出回调并 erase，解锁后再调用 —— 用户回调可能回调进
+                // WebViewWrapper（如再次 call_js），持锁调用会死锁。
+                PendingCallback cb;
+                bool found = false;
+                {
+                    std::lock_guard<std::mutex> lock(self->m_callback_mutex);
+                    auto it = self->m_pending_callbacks.find(id);
+                    if (it != self->m_pending_callbacks.end()) {
+                        cb = std::move(it->second);
+                        self->m_pending_callbacks.erase(it);
+                        found = true;
                     }
-                    self->m_pending_callbacks.erase(it);
+                }
+                if (found) {
+                    if (success) {
+                        if (cb.on_result) cb.on_result(json::parse(value));
+                    } else {
+                        if (cb.on_error) cb.on_error(value);
+                    }
                 }
             } catch (...) {
                 // 吞掉所有异常，避免穿透到 webview C 回调栈
@@ -839,14 +847,18 @@ bool WebViewWrapper::setup_js_bridge() {
                     }
                 }
 
+                // 先注册 pending callback —— reject()/resolve() 都依赖 m_pending_callbacks
+                // 里存在该 id 才能定位 is_js_cb 并向 JS 端发出回调。若对象未找到时直接
+                // reject 而 id 未注册，reject 会 find 失败静默返回，JS 端 Promise 永久挂起。
+                {
+                    std::lock_guard<std::mutex> lock(self->m_callback_mutex);
+                    self->m_pending_callbacks[id] = { nullptr, nullptr, has_cb };
+                }
+
                 if (!obj) {
                     self->reject(id, BindingException(ErrorCode::OBJECT_NOT_FOUND,
                         "Object not found: " + obj_name).to_json().dump());
                 } else {
-                    {
-                        std::lock_guard<std::mutex> lock(self->m_callback_mutex);
-                        self->m_pending_callbacks[id] = { nullptr, nullptr, has_cb };
-                    }
                     self->dispatch_task([obj, method, id, args, self]() {
                         obj->invoke_async(method, id, args, self);
                     });
@@ -1050,7 +1062,7 @@ void WebViewWrapper::call_js_fn(const std::string& fn_id, const json& args,
     std::string js = "(function(){"
         "try{"
         "  var r=window.__call_js_fn__('" + fn_id + "'," + args.dump(-1,' ',true) + ");"
-        "  window.__cpp_result__('" + id + "',true,JSON.stringify(r));"
+        "  window.__cpp_result__('" + id + "',true,JSON.stringify(r === undefined ? null : r));"
         "}catch(e){"
         "  window.__cpp_result__('" + id + "',false,JSON.stringify({message:e.message||String(e)}));"
         "}"
