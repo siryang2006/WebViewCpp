@@ -943,11 +943,11 @@ bool WebViewWrapper::setup_js_bridge() {
                 for (auto& n : obj->property_names()) prop_names.push_back(n);
 
                 json result = {
-                    {"id", instance_id},
-                    {"type", type_name},
-                    {"sync", std::move(sync_names)},
-                    {"async", std::move(async_names)},
-                    {"props", std::move(prop_names)}
+                    {{"id", instance_id}},
+                    {{"type", type_name}},
+                    {{"sync", std::move(sync_names)}},
+                    {{"async", std::move(async_names)}},
+                    {{"props", std::move(prop_names)}}
                 };
                 webview_return(self->m_webview, seq, 0, result.dump().c_str());
             } catch (const std::exception& e) {
