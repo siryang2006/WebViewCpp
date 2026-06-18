@@ -167,7 +167,7 @@ bool WebViewWrapper::init(const std::string& title, const std::string& url,
     if (!hwnd) return false;
     // 用我们的 wndproc 替换默认 Static proc。
     ::SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(containing_wndproc));
-    ::SetWindowTextW(hwnd, L"WebView C++ Binding Demo");
+    ::SetWindowTextW(hwnd, L"Loading...");
     m_containing_window = hwnd;
 
     // 传入我们的窗口，让 webview 托管（m_owns_window=false）。
@@ -683,13 +683,13 @@ void WebViewWrapper::call_js(const std::string& func_name, const json& args,
        << "      result.then(function(r) {\n"
        << "        window.__cpp_result__('" << id << "', true, JSON.stringify(r));\n"
        << "      }).catch(function(e) {\n"
-       << "        window.__cpp_result__('" << id << "', false, e.message || String(e));\n"
+       << "        window.__cpp_result__('" << id << "', false, JSON.stringify(e.message || String(e)));\n"
        << "      });\n"
        << "    } else {\n"
        << "      window.__cpp_result__('" << id << "', true, JSON.stringify(result));\n"
        << "    }\n"
        << "  } catch(e) {\n"
-       << "    window.__cpp_result__('" << id << "', false, e.message || String(e));\n"
+       << "    window.__cpp_result__('" << id << "', false, JSON.stringify(e.message || String(e)));\n"
        << "  }\n"
        << "})();";
     post_eval(js.str());
