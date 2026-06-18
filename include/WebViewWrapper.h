@@ -102,6 +102,10 @@ private:
     // 宿主进程一旦消失（正常退出/崩溃/被强杀），内核自动连同 Job 内
     // 所有 WebView2 子进程一起终止，避免孤儿进程残留。HANDLE 存为 void*。
     void* m_job = nullptr;
+
+    // 自建窗口句柄（OwnsWindow=true 时由 webview 持有，OwnsWindow=false 时由我们持有，
+    // webview_destroy 不销毁它）。用于 show_window 和 resize_containing。
+    void* m_containing_window = nullptr;
 #endif
 
     // GUI（消息循环）线程 id：webview_init/webview_create 等 API 只能在此线程调用。

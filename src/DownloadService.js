@@ -10,28 +10,43 @@ class DownloadService {
 
     startDownload(params, callback) {
         var cbId = '__dl_cb_' + this._nextId++;
+        var self = this;
+
+        var cleanup = function() {
+            delete self._callbacks[cbId];
+            if (window.__registered_cbs__) delete window.__registered_cbs__[cbId];
+        };
 
         this._callbacks[cbId] = function(data) {
             if (callback) callback(data);
             if (data.status === 'completed' || data.status === 'cancelled' || data.status === 'error') {
-                delete window.downloadService._callbacks[cbId];
-                delete window.__registered_cbs__[cbId];
+                cleanup();
             }
         };
 
         window.__register_cb__(cbId, function(data) {
-            if (window.downloadService._callbacks[cbId]) {
-                window.downloadService._callbacks[cbId](data);
+            if (self._callbacks[cbId]) {
+                self._callbacks[cbId](data);
             }
         });
 
-        return window.__cpp__.download.startDownload({
+        var p = window.__cpp__.download.startDownload({
             url: params.url,
             savePath: params.savePath,
             modelId: params.modelId,
             totalSize: params.totalSize || 0,
             callback: cbId
         });
+        // If C++ rejects the start (e.g. already in progress), no progress callback
+        // will ever fire, so unregister here to avoid leaking the callback.
+        if (p && typeof p.then === 'function') {
+            p.then(function(r) {
+                if (r && r.ok === false) cleanup();
+            }, function() {
+                cleanup();
+            });
+        }
+        return p;
     }
 
     pauseDownload(modelId) {

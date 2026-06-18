@@ -3,6 +3,9 @@
 #include <curl/curl.h>
 #include <fstream>
 #include <iostream>
+#include <vector>
+#include <cstring>
+#include <cstdlib>
 #include <direct.h>
 #include <sys/stat.h>
 
@@ -40,20 +43,27 @@ DownloadService::DownloadService(const std::string& base_dir)
 }
 
 DownloadService::~DownloadService() {
+    // Copy task pointers out under the lock, then signal + join WITHOUT holding
+    // m_mutex — progressCallback (on the worker thread) also locks m_mutex, so
+    // joining while holding it would deadlock.
+    std::vector<std::shared_ptr<DownloadTask>> tasks;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         for (auto& [id, task] : m_tasks) {
-            task->cancelled.store(true);
-            {
-                std::lock_guard<std::mutex> plock(task->pauseMutex);
-                task->pausedFlag = false;
-            }
-            task->pauseCv.notify_all();
-            if (task->thread.joinable()) {
-                task->thread.join();
-            }
+            tasks.push_back(task);
         }
         m_tasks.clear();
+    }
+    for (auto& task : tasks) {
+        task->cancelled.store(true);
+        {
+            std::lock_guard<std::mutex> plock(task->pauseMutex);
+            task->pausedFlag = false;
+        }
+        task->pauseCv.notify_all();
+        if (task->thread.joinable()) {
+            task->thread.join();
+        }
     }
     curl_global_cleanup();
 }
@@ -111,18 +121,36 @@ void DownloadService::startDownload(const std::string& id, const json& args, Web
     long long totalSize = params.value("totalSize", 0LL);
     std::string callbackFn = params.value("callback", "");
 
+    if (url.empty() || savePath.empty() || modelId.empty()) {
+        if (wv) wv->reject(id, "startDownload requires url, savePath and modelId");
+        return;
+    }
+    // Reject path traversal: savePath comes straight from JS and is joined onto
+    // the app directory, so '..' segments could escape it and overwrite arbitrary files.
+    if (savePath.find("..") != std::string::npos) {
+        if (wv) wv->reject(id, "Invalid savePath");
+        return;
+    }
+
+    // Retire any finished/cancelled task for this model first. Move the stale
+    // thread out and join it AFTER releasing m_mutex (the worker's progressCallback
+    // also locks m_mutex, so joining under the lock would deadlock).
+    std::thread staleThread;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_tasks.count(modelId)) {
-            auto& existing = m_tasks[modelId];
+        auto it = m_tasks.find(modelId);
+        if (it != m_tasks.end()) {
+            auto& existing = it->second;
             if (!existing->cancelled.load() && !existing->completed.load()) {
                 if (wv) wv->reject(id, "Download already in progress for model: " + modelId);
                 return;
             }
-            if (existing->thread.joinable()) {
-                existing->thread.join();
-            }
+            staleThread = std::move(existing->thread);
+            m_tasks.erase(it);
         }
+    }
+    if (staleThread.joinable()) {
+        staleThread.join();
     }
 
     std::string dir;
@@ -155,6 +183,7 @@ void DownloadService::startDownload(const std::string& id, const json& args, Web
         m_tasks[modelId] = task;
     }
 
+    task->threadRunning.store(true);
     task->thread = std::thread(&DownloadService::downloadWorker, this, task);
 
     if (wv) wv->resolve(id, {{"ok", true}, {"modelId", modelId}});
@@ -215,8 +244,6 @@ json DownloadService::resumeDownload(const json& args) {
         return ok_result({{"status", "resumed"}, {"message", "Already running"}});
     }
 
-    bool threadAlive = task->thread.joinable();
-
     task->paused.store(false);
     {
         std::lock_guard<std::mutex> plock(task->pauseMutex);
@@ -224,7 +251,14 @@ json DownloadService::resumeDownload(const json& args) {
     }
     task->pauseCv.notify_all();
 
-    if (!threadAlive && !task->completed.load() && !task->cancelled.load()) {
+    // If the worker is no longer running (e.g. the connection dropped while paused),
+    // restart it. threadRunning — not thread.joinable() — is the live signal: a
+    // finished std::thread stays joinable until it's actually joined.
+    if (!task->threadRunning.load() && !task->completed.load() && !task->cancelled.load()) {
+        if (task->thread.joinable()) {
+            task->thread.join();
+        }
+        task->threadRunning.store(true);
         task->thread = std::thread(&DownloadService::downloadWorker, this, task);
     }
 
@@ -255,10 +289,10 @@ json DownloadService::cancelDownload(const json& args) {
     }
     task->pauseCv.notify_all();
 
-    if (task->curlHandle) {
-        curl_easy_pause(static_cast<CURL*>(task->curlHandle), CURLPAUSE_CONT);
-    }
-
+    // The write/progress callbacks both abort once `cancelled` is set, which ends
+    // curl_easy_perform on its own. We deliberately do NOT touch task->curlHandle
+    // here: the worker thread may be tearing it down concurrently, so reading it
+    // from this thread would be a use-after-free race.
     if (task->thread.joinable()) {
         task->thread.join();
     }
@@ -318,60 +352,89 @@ void DownloadService::downloadWorker(std::shared_ptr<DownloadTask> task) {
     CURL* curl = curl_easy_init();
     if (!curl) {
         task->cancelled.store(true);
+        task->threadRunning.store(false);
         reportProgress(task);
         return;
     }
 
-    task->curlHandle = curl;
+    task->curlHandle.store(curl);
 
+    // How many bytes are already on disk. We request a resume from here, but the
+    // file is NOT opened yet — writeCallback opens it once it knows from the status
+    // code whether the server actually honored the range (206) or is sending the
+    // whole body from scratch (200). Appending a full body onto a partial file
+    // would silently corrupt the download.
     long long existingSize = 0;
     struct stat st;
     if (stat(task->savePath.c_str(), &st) == 0) {
         existingSize = st.st_size;
     }
 
-    FILE* fp = fopen(task->savePath.c_str(), existingSize > 0 ? "ab" : "wb");
-    if (!fp) {
-        curl_easy_cleanup(curl);
-        task->curlHandle = nullptr;
-        task->cancelled.store(true);
-        reportProgress(task);
-        return;
-    }
-    task->fileHandle = fp;
+    // Run one curl transfer, optionally resuming from `resumeAt` bytes. Returns the
+    // CURLcode; httpCode is written out. Factored out so we can retry from scratch.
+    auto perform = [&](long long resumeAt) -> CURLcode {
+        task->resumeFrom = resumeAt;
+        task->httpStatus = 0;
+        task->fileOpened = false;
+        task->fileHandle = nullptr;
 
-    curl_easy_setopt(curl, CURLOPT_URL, task->url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, task.get());
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progressCallback);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, task.get());
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_FILETIME, 1L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        curl_easy_reset(curl);
+        curl_easy_setopt(curl, CURLOPT_URL, task->url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, task.get());
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCallback);
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, task.get());
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progressCallback);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, task.get());
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_FILETIME, 1L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        if (resumeAt > 0) {
+            curl_easy_setopt(curl, CURLOPT_RESUME_FROM_LARGE, static_cast<curl_off_t>(resumeAt));
+        }
 
-    if (existingSize > 0) {
-        curl_easy_setopt(curl, CURLOPT_RESUME_FROM_LARGE, static_cast<curl_off_t>(existingSize));
-    }
+        CURLcode rc = curl_easy_perform(curl);
+        if (task->fileHandle) {
+            fclose(task->fileHandle);
+            task->fileHandle = nullptr;
+        }
+        return rc;
+    };
 
-    CURLcode res = curl_easy_perform(curl);
+    CURLcode res = perform(existingSize);
     long httpCode = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
 
-    fclose(fp);
-    task->fileHandle = nullptr;
-    curl_easy_cleanup(curl);
-    task->curlHandle = nullptr;
+    // CURLE_RANGE_ERROR (33): we asked to resume but the server doesn't support
+    // ranges, so curl aborted before delivering any body. Reset the on-disk bytes
+    // and retry once from offset 0 (full re-download).
+    if (res == CURLE_RANGE_ERROR && existingSize > 0 &&
+        !task->cancelled.load() && !task->paused.load()) {
+        task->downloaded.store(0);
+        task->lastDownloaded = 0;
+        res = perform(0);
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+    }
 
-    if (res == CURLE_OK && httpCode == 200) {
+    // Detach the handle BEFORE cleanup so nothing else can read a dangling pointer.
+    task->curlHandle.store(nullptr);
+    curl_easy_cleanup(curl);
+
+    // 200 = full body, 206 = partial content (successful resume). Both, with a
+    // clean curl result, mean the transfer finished. curl already enforces
+    // Content-Length (CURLE_PARTIAL_FILE otherwise), so we don't double-check size.
+    if (res == CURLE_OK && (httpCode == 200 || httpCode == 206)) {
         task->completed.store(true);
     } else if (task->cancelled.load()) {
-        // cancelled
+        // cancelled by user
     } else if (task->paused.load()) {
-        // paused
+        // paused — thread exits, resumeDownload() will respawn it
     } else {
+        // network/server failure: leave the partial file on disk so a later
+        // resume can continue, but do NOT mark completed.
         task->cancelled.store(true);
     }
 
@@ -383,6 +446,7 @@ void DownloadService::downloadWorker(std::shared_ptr<DownloadTask> task) {
                   << " curl=" << res << " http=" << httpCode << std::endl;
     }
 
+    task->threadRunning.store(false);
     reportProgress(task);
 }
 
@@ -429,16 +493,47 @@ size_t DownloadService::writeCallback(void* ptr, size_t size, size_t nmemb, void
         return 0;
     }
 
+    // Open the file lazily on the first body byte, now that headerCallback has
+    // recorded the status code. 206 => server honored our Range, so append to the
+    // partial file. Anything else (200, redirected body, range ignored) => start
+    // fresh by truncating, otherwise we'd corrupt the file by appending a full body.
+    if (!task->fileOpened) {
+        const char* mode = (task->httpStatus == 206 && task->resumeFrom > 0) ? "ab" : "wb";
+        if (mode[0] == 'w') {
+            task->downloaded.store(0);   // restarting from scratch
+            task->lastDownloaded = 0;
+        }
+        task->fileHandle = fopen(task->savePath.c_str(), mode);
+        task->fileOpened = true;
+        if (!task->fileHandle) {
+            return 0;  // abort the transfer; worker will mark it failed
+        }
+    }
+
     size_t bytes = size * nmemb;
     if (task->fileHandle) {
-        size_t written = fwrite(ptr, size, nmemb, task->fileHandle);
-        task->downloaded.fetch_add(written * size);
-        return written * size;
+        size_t written = fwrite(ptr, 1, bytes, task->fileHandle);
+        task->downloaded.fetch_add(static_cast<long long>(written));
+        return written;
     }
     return 0;
 }
 
-int DownloadService::progressCallback(void* clientp, long long dltotal, long long dlnow, long long ultotal, long long ulnow) {
+size_t DownloadService::headerCallback(char* buffer, size_t size, size_t nitems, void* userdata) {
+    auto* task = static_cast<DownloadTask*>(userdata);
+    size_t total = size * nitems;
+    // Status line, e.g. "HTTP/1.1 206 Partial Content". On a redirect chain curl
+    // delivers a status line per response; the last one wins, which is what we want.
+    if (total >= 12 && buffer[0] == 'H' && buffer[1] == 'T' && buffer[2] == 'T' && buffer[3] == 'P') {
+        const char* sp = static_cast<const char*>(memchr(buffer, ' ', total));
+        if (sp && sp + 1 < buffer + total) {
+            task->httpStatus = strtol(sp + 1, nullptr, 10);
+        }
+    }
+    return total;
+}
+
+int DownloadService::progressCallback(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
     auto* task = static_cast<DownloadTask*>(clientp);
 
     if (task->cancelled.load()) {
@@ -461,9 +556,8 @@ int DownloadService::progressCallback(void* clientp, long long dltotal, long lon
     if (elapsed >= 1000) {
         long long currentDownloaded = task->downloaded.load();
         long long delta = currentDownloaded - task->lastDownloaded;
-        if (delta > 0) {
-            task->speed.store(delta * 1000 / elapsed);
-        }
+        // Decay to 0 on a stalled interval instead of holding the last value.
+        task->speed.store(delta > 0 ? (delta * 1000 / elapsed) : 0);
         task->lastDownloaded = currentDownloaded;
         task->lastSpeedTime = now;
         

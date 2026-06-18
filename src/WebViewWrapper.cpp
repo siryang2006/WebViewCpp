@@ -5,12 +5,60 @@
 #include <chrono>
 
 #ifdef _WIN32
+#define UNICODE
+#define _UNICODE
 #include <windows.h>
-#endif
 
-// 注意：webview 的 onReply 对成功和失败结果都执行 JSON.parse()。
-// 因此通过 webview_return 返回的错误结果也必须是合法 JSON（用 json(msg).dump()
-// 编码），否则 JS 端只会看到 "Failed to parse binding result as JSON" 而丢失真实错误。
+// Win32 辅助：获取窗口 DPI。
+static int get_window_dpi(HWND hwnd) {
+    UINT dpi = GetDpiForWindow(hwnd);
+    return dpi ? dpi : 96;
+}
+
+// Win32 辅助：计算 contentRect(不含边框) → 加上标题栏和边框后的 frame size。
+// 与 webview 内部 make_window_frame_size 逻辑一致。
+// hwnd 用于查询 DPI；style 是已知的窗口风格。
+static SIZE content_to_frame(HWND hwnd, DWORD style, int cx, int cy) {
+    RECT r{0, 0, cx, cy};
+    using AdjustWindowRectExForDpiFn = BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    static AdjustWindowRectExForDpiFn adjFn =
+        (AdjustWindowRectExForDpiFn)GetProcAddress(GetModuleHandleW(L"user32.dll"),
+                                                    "AdjustWindowRectExForDpi");
+    int dpi = hwnd ? get_window_dpi(hwnd) : 96;
+    if (adjFn) {
+        adjFn(&r, style, FALSE, 0, (UINT)dpi);
+    } else {
+        AdjustWindowRect(&r, style, FALSE);
+    }
+    return {r.right - r.left, r.bottom - r.top};
+}
+
+// Win32 窗口过程：只处理 WM_SIZE（把 widget 填满 client area）和 WM_CLOSE/WM_DESTROY。
+// 所有其他消息走 DefWindowProc。
+static LRESULT CALLBACK containing_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_SIZE: {
+            // 窗口 client area 变化时，把 widget 子窗口填满它。
+            // webview_get_native_handle(WEBVIEW_NATIVE_HANDLE_KIND_UI_WIDGET) 在 embed()
+            // 完成前不可用（返回 null），所以这里用 FindWindow 找已存在的 widget。
+            HWND widget = ::FindWindowExW(hwnd, nullptr, L"webview_widget", nullptr);
+            if (widget) {
+                RECT r;
+                GetClientRect(hwnd, &r);
+                SetWindowPos(widget, nullptr, 0, 0, r.right, r.bottom, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            return 0;
+        }
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+#endif // _WIN32
 
 // ============================================================
 // CppObject::invoke_async
@@ -105,17 +153,58 @@ bool WebViewWrapper::init(const std::string& title, const std::string& url,
         browser_args += " --remote-debugging-port=" + std::to_string(debug_port);
     }
     SetEnvironmentVariableA("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", browser_args.c_str());
-#endif
 
+    // 创建外层容器窗口，计算含边框的 frame size：
+    // 这样 webview 嵌入后从第一帧起就是正确尺寸，不会有 CW_USEDEFAULT 小窗口跳变。
+    HINSTANCE hInst = ::GetModuleHandleW(nullptr);
+    DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+    if (!resizable) style &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+    SIZE frame = content_to_frame(nullptr, style, width, height);
+    HWND hwnd = ::CreateWindowExW(0, L"STATIC", L"", style,
+                                  CW_USEDEFAULT, CW_USEDEFAULT,
+                                  frame.cx, frame.cy,
+                                  nullptr, nullptr, hInst, nullptr);
+    if (!hwnd) return false;
+    // 用我们的 wndproc 替换默认 Static proc。
+    ::SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(containing_wndproc));
+    ::SetWindowTextW(hwnd, L"WebView C++ Binding Demo");
+    m_containing_window = hwnd;
+
+    // 传入我们的窗口，让 webview 托管（m_owns_window=false）。
+    // 这样 webview 不会走 CW_USEDEFAULT 自建路径，也不会在 embed() 期间 ShowWindow。
+    m_webview = webview_create(1, hwnd);
+    if (!m_webview) {
+        ::DestroyWindow(hwnd);
+        m_containing_window = nullptr;
+        return false;
+    }
+
+    // embed() 阻塞期间窗口保持隐藏；返回后设置标题，再显示。
+    // 注意：webview 不会帮我们设标题（因为 m_owns_window=false），
+    // 所以标题要在这里单独设置。
+    webview_set_title(m_webview, title.c_str());
+#else
     m_webview = webview_create(1, nullptr);
     if (!m_webview) return false;
+    webview_set_title(m_webview, title.c_str());
+    webview_set_size(m_webview, width, height,
+                     resizable ? WEBVIEW_HINT_NONE : WEBVIEW_HINT_FIXED);
+#endif
 
     m_gui_thread_id = std::this_thread::get_id();
 
-    webview_set_title(m_webview, title.c_str());
-
-    webview_set_size(m_webview, width, height,
-                     resizable ? WEBVIEW_HINT_NONE : WEBVIEW_HINT_FIXED);
+#ifdef _WIN32
+    // 在显示窗口前，先把 widget 填满 client area。
+    // embed() 返回后 widget 已经创建，直接填满然后才 ShowWindow。
+    HWND widget = ::FindWindowExW(static_cast<HWND>(m_containing_window), nullptr, L"webview_widget", nullptr);
+    if (widget) {
+        RECT r;
+        ::GetClientRect(static_cast<HWND>(m_containing_window), &r);
+        ::SetWindowPos(widget, nullptr, 0, 0, r.right, r.bottom, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    ::ShowWindow(static_cast<HWND>(m_containing_window), SW_SHOW);
+    ::UpdateWindow(static_cast<HWND>(m_containing_window));
+#endif
 
     if (!setup_js_bridge()) {
         webview_destroy(m_webview);
@@ -135,6 +224,11 @@ bool WebViewWrapper::init(const std::string& title, const std::string& url,
 // 主循环
 // ============================================================
 void WebViewWrapper::run() {
+#ifdef _WIN32
+    if (m_containing_window) {
+        ::SetForegroundWindow(static_cast<HWND>(m_containing_window));
+    }
+#endif
     webview_run(m_webview);
 }
 
@@ -152,6 +246,14 @@ void WebViewWrapper::terminate() {
         for (auto& [id, cb] : pending) {
             if (cb.on_error) cb.on_error("WebView terminated");
         }
+
+#ifdef _WIN32
+        // 销毁我们自建的窗口（m_owns_window=false，所以 webview_destroy 不会碰它）。
+        if (m_containing_window) {
+            ::DestroyWindow(static_cast<HWND>(m_containing_window));
+            m_containing_window = nullptr;
+        }
+#endif
     }
 }
 

@@ -19,7 +19,7 @@ def run_tests():
         result = subprocess.run([EXE_PATH, "--test"],
                                 capture_output=True,
                                 text=True,
-                                timeout=15)
+                                timeout=60)
         output = result.stdout
     except subprocess.TimeoutExpired:
         print("ERROR: Test timed out")
@@ -72,6 +72,12 @@ def run_tests():
         "download.cancelDownload_no_task",
         "download.getProgress_no_task",
         "download.getSpeed_no_task",
+        "download.pause_empty_modelId",
+        "download.full_download",
+        "download.resume_206_append",
+        "download.no_range_truncates",
+        "download.pause_resume",
+        "download.cancel_removes_task",
     ]
 
     for name in expected:

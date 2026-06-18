@@ -6,9 +6,12 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <cstdlib>
 #include <sys/stat.h>
 
 #ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #endif
 
@@ -122,6 +125,9 @@ public:
             wv->dispatch_task([id, path, dir, wv]() {
                 if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
                 if (path.empty()) { wv->reject(id, "path is required"); return; }
+                // path comes from JS and is joined onto the app dir; reject '..' so
+                // it can't escape the directory and delete arbitrary files.
+                if (path.find("..") != std::string::npos) { wv->reject(id, "Invalid path"); return; }
                 std::string fullPath = dir + "/" + path;
                 int ret = remove(fullPath.c_str());
                 if (ret == 0) {
@@ -304,6 +310,112 @@ private:
     std::string m_name;
     int m_priority;
 };
+
+#ifdef _WIN32
+// ============================================================
+// 测试用最小 HTTP 服务器（仅用于 DownloadService 集成测试）
+// 在本地回环端口上提供一段已知内容，可选支持 HTTP Range（断点续传）。
+// 无需外网，全部在测试进程内运行。
+// ============================================================
+class TestHttpServer {
+public:
+    // body: 要提供的内容；supportRange: 是否honor Range 请求(206)；
+    // throttleMs: 每个数据块之间的延迟(ms)，用于给暂停/取消留出时间窗口。
+    TestHttpServer(std::string body, bool supportRange, int throttleMs = 0)
+        : m_body(std::move(body)), m_supportRange(supportRange), m_throttleMs(throttleMs) {
+        WSADATA wsa;
+        WSAStartup(MAKEWORD(2, 2), &wsa);
+        m_listen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;  // 让系统分配空闲端口
+        bind(m_listen, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+        listen(m_listen, 4);
+        int len = sizeof(addr);
+        getsockname(m_listen, reinterpret_cast<sockaddr*>(&addr), &len);
+        m_port = ntohs(addr.sin_port);
+        m_thread = std::thread([this] { serve(); });
+    }
+
+    ~TestHttpServer() {
+        m_stop.store(true);
+        closesocket(m_listen);
+        if (m_thread.joinable()) m_thread.join();
+        WSACleanup();
+    }
+
+    int port() const { return m_port; }
+    std::string url() const { return "http://127.0.0.1:" + std::to_string(m_port) + "/file"; }
+
+private:
+    void serve() {
+        while (!m_stop.load()) {
+            SOCKET client = accept(m_listen, nullptr, nullptr);
+            if (client == INVALID_SOCKET) break;  // listen socket closed -> shutdown
+            handle(client);
+            closesocket(client);
+        }
+    }
+
+    void handle(SOCKET client) {
+        // 读取请求头（直到 \r\n\r\n）
+        std::string req;
+        char buf[2048];
+        while (req.find("\r\n\r\n") == std::string::npos) {
+            int n = recv(client, buf, sizeof(buf), 0);
+            if (n <= 0) return;
+            req.append(buf, n);
+        }
+
+        long long start = 0;
+        bool hasRange = false;
+        if (m_supportRange) {
+            auto pos = req.find("Range: bytes=");
+            if (pos != std::string::npos) {
+                start = strtoll(req.c_str() + pos + 13, nullptr, 10);
+                hasRange = true;
+            }
+        }
+
+        long long total = static_cast<long long>(m_body.size());
+        if (start < 0 || start > total) start = 0;
+        std::string slice = m_body.substr(static_cast<size_t>(start));
+
+        std::ostringstream hdr;
+        if (hasRange) {
+            hdr << "HTTP/1.1 206 Partial Content\r\n";
+            hdr << "Content-Range: bytes " << start << "-" << (total - 1) << "/" << total << "\r\n";
+        } else {
+            hdr << "HTTP/1.1 200 OK\r\n";
+        }
+        hdr << "Content-Length: " << slice.size() << "\r\n";
+        hdr << "Accept-Ranges: bytes\r\n";
+        hdr << "Connection: close\r\n\r\n";
+        std::string h = hdr.str();
+        send(client, h.c_str(), static_cast<int>(h.size()), 0);
+
+        // 分块发送 body，可选限速
+        size_t off = 0;
+        const size_t chunk = 4096;
+        while (off < slice.size()) {
+            size_t n = (std::min)(chunk, slice.size() - off);
+            int sent = send(client, slice.data() + off, static_cast<int>(n), 0);
+            if (sent <= 0) break;
+            off += sent;
+            if (m_throttleMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(m_throttleMs));
+        }
+    }
+
+    std::string m_body;
+    bool m_supportRange;
+    int m_throttleMs;
+    SOCKET m_listen = INVALID_SOCKET;
+    int m_port = 0;
+    std::thread m_thread;
+    std::atomic<bool> m_stop{false};
+};
+#endif // _WIN32
 
 // ============================================================
 // C++ 服务测试（纯 C++ 单元测试，无需 WebView）
@@ -513,6 +625,141 @@ static bool run_cpp_tests() {
         if (r["ok"] == false) { report("download.getSpeed_no_task", true, "got error: " + r.dump()); passed++; }
         else { report("download.getSpeed_no_task", false, "Expected error, got " + r.dump()); failed++; }
     } catch (const std::exception& e) { report("download.getSpeed_no_task", false, e.what()); failed++; }
+
+    // startDownload 现在校验必填参数（url/savePath/modelId）。invoke_sync 走异步分支会抛异常，
+    // 故这里直接调用公共方法、传 wv=nullptr 来观察拒绝行为对路径穿越的防护。
+    try {
+        json r = download->invoke_sync("pauseDownload", {{"modelId", ""}});
+        if (r["ok"] == false && r["code"] == static_cast<int>(ErrorCode::INVALID_ARGUMENTS)) {
+            report("download.pause_empty_modelId", true, "got " + r.dump()); passed++;
+        } else { report("download.pause_empty_modelId", false, "Expected INVALID_ARGUMENTS, got " + r.dump()); failed++; }
+    } catch (const std::exception& e) { report("download.pause_empty_modelId", false, e.what()); failed++; }
+
+#ifdef _WIN32
+    // ============================================================
+    // DownloadService 集成测试：本地 HTTP 服务器，无需外网/WebView
+    // 直接调用 startDownload(id, args, nullptr) 驱动下载线程，轮询 getProgress 观察状态。
+    // ============================================================
+    auto makeBody = [](size_t n) {
+        std::string s; s.reserve(n);
+        for (size_t i = 0; i < n; ++i) s.push_back(static_cast<char>('A' + (i % 26)));
+        return s;
+    };
+    auto readFile = [](const std::string& path) -> std::string {
+        std::ifstream f(path, std::ios::binary);
+        std::stringstream ss; ss << f.rdbuf(); return ss.str();
+    };
+    // 轮询直到状态命中 target 之一或超时；返回最终 status（""=超时）。
+    auto pollStatus = [&](std::shared_ptr<DownloadService> svc, const std::string& mid,
+                          std::initializer_list<const char*> targets, int timeoutMs) -> std::string {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+        while (std::chrono::steady_clock::now() < deadline) {
+            json r = svc->invoke_sync("getProgress", {{"modelId", mid}});
+            if (r.contains("data") && r["data"].contains("status")) {
+                std::string st = r["data"]["status"].get<std::string>();
+                for (auto* t : targets) if (st == t) return st;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        return "";
+    };
+
+    auto startArgs = [](const std::string& url, const std::string& path,
+                        const std::string& mid, long long total) -> json {
+        return json::array({ json{{"url", url}, {"savePath", path}, {"modelId", mid}, {"totalSize", total}} });
+    };
+
+    // --- 测试 1: 完整下载（服务器无 Range 支持，200）---
+    try {
+        std::string body = makeBody(64 * 1024);
+        TestHttpServer srv(body, /*range*/false);
+        std::string path = "test_dl_full.bin";
+        remove(path.c_str());
+        auto svc = std::make_shared<DownloadService>(".");
+        svc->startDownload("t1", startArgs(srv.url(), path, "m_full", (long long)body.size()), nullptr);
+        std::string st = pollStatus(svc, "m_full", {"completed", "cancelled"}, 10000);
+        std::string got = readFile(path);
+        if (st == "completed" && got == body) { report("download.full_download", true, std::to_string(got.size()) + " bytes"); passed++; }
+        else { report("download.full_download", false, "status=" + st + " size=" + std::to_string(got.size()) + "/" + std::to_string(body.size())); failed++; }
+        remove(path.c_str());
+    } catch (const std::exception& e) { report("download.full_download", false, e.what()); failed++; }
+
+    // --- 测试 2: 断点续传（服务器支持 Range，206 → 追加）---
+    try {
+        std::string body = makeBody(64 * 1024);
+        std::string path = "test_dl_resume.bin";
+        remove(path.c_str());
+        // 预置前半部分（必须与 body 前缀一致，否则续传会得到错误内容）
+        size_t partial = 20 * 1024;
+        { std::ofstream of(path, std::ios::binary); of.write(body.data(), partial); }
+        TestHttpServer srv(body, /*range*/true);
+        auto svc = std::make_shared<DownloadService>(".");
+        svc->startDownload("t2", startArgs(srv.url(), path, "m_resume", (long long)body.size()), nullptr);
+        std::string st = pollStatus(svc, "m_resume", {"completed", "cancelled"}, 10000);
+        std::string got = readFile(path);
+        if (st == "completed" && got == body) { report("download.resume_206_append", true, "resumed from " + std::to_string(partial)); passed++; }
+        else { report("download.resume_206_append", false, "status=" + st + " size=" + std::to_string(got.size()) + "/" + std::to_string(body.size())); failed++; }
+        remove(path.c_str());
+    } catch (const std::exception& e) { report("download.resume_206_append", false, e.what()); failed++; }
+
+    // --- 测试 3: 有残留文件但服务器忽略 Range（返回 200 完整 body）→ 必须截断重下，不能损坏 ---
+    try {
+        std::string body = makeBody(64 * 1024);
+        std::string path = "test_dl_norange.bin";
+        remove(path.c_str());
+        // 预置一段“垃圾”数据；若错误地追加完整 body，文件会比 body 更大且内容错位
+        { std::ofstream of(path, std::ios::binary); std::string junk(20 * 1024, 'Z'); of.write(junk.data(), junk.size()); }
+        TestHttpServer srv(body, /*range*/false);  // 忽略 Range，始终 200
+        auto svc = std::make_shared<DownloadService>(".");
+        svc->startDownload("t3", startArgs(srv.url(), path, "m_norange", (long long)body.size()), nullptr);
+        std::string st = pollStatus(svc, "m_norange", {"completed", "cancelled"}, 10000);
+        std::string got = readFile(path);
+        if (st == "completed" && got == body) { report("download.no_range_truncates", true, "clean " + std::to_string(got.size()) + " bytes"); passed++; }
+        else { report("download.no_range_truncates", false, "status=" + st + " size=" + std::to_string(got.size()) + "/" + std::to_string(body.size())); failed++; }
+        remove(path.c_str());
+    } catch (const std::exception& e) { report("download.no_range_truncates", false, e.what()); failed++; }
+
+    // --- 测试 4: 暂停 → 恢复 → 完成 ---
+    try {
+        std::string body = makeBody(128 * 1024);
+        std::string path = "test_dl_pause.bin";
+        remove(path.c_str());
+        TestHttpServer srv(body, /*range*/true, /*throttleMs*/15);  // 限速制造暂停窗口
+        auto svc = std::make_shared<DownloadService>(".");
+        svc->startDownload("t4", startArgs(srv.url(), path, "m_pause", (long long)body.size()), nullptr);
+        // 等到下载真正开始
+        pollStatus(svc, "m_pause", {"downloading"}, 5000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        json pr = svc->invoke_sync("pauseDownload", {{"modelId", "m_pause"}});
+        std::string pst = pollStatus(svc, "m_pause", {"paused"}, 3000);
+        json rr = svc->invoke_sync("resumeDownload", {{"modelId", "m_pause"}});
+        std::string st = pollStatus(svc, "m_pause", {"completed", "cancelled"}, 15000);
+        std::string got = readFile(path);
+        bool ok = (pr["ok"] == true) && (pst == "paused") && (rr["ok"] == true) && (st == "completed") && (got == body);
+        if (ok) { report("download.pause_resume", true, "paused then completed"); passed++; }
+        else { report("download.pause_resume", false, "pauseOk=" + std::string(pr.value("ok",false)?"1":"0") + " pst=" + pst + " st=" + st + " size=" + std::to_string(got.size()) + "/" + std::to_string(body.size())); failed++; }
+        remove(path.c_str());
+    } catch (const std::exception& e) { report("download.pause_resume", false, e.what()); failed++; }
+
+    // --- 测试 5: 取消（任务应被移除）---
+    try {
+        std::string body = makeBody(256 * 1024);
+        std::string path = "test_dl_cancel.bin";
+        remove(path.c_str());
+        TestHttpServer srv(body, /*range*/true, /*throttleMs*/15);
+        auto svc = std::make_shared<DownloadService>(".");
+        svc->startDownload("t5", startArgs(srv.url(), path, "m_cancel", (long long)body.size()), nullptr);
+        pollStatus(svc, "m_cancel", {"downloading"}, 5000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        json cr = svc->invoke_sync("cancelDownload", {{"modelId", "m_cancel"}});
+        // 取消后任务应已从 map 移除，getProgress 返回错误
+        json gp = svc->invoke_sync("getProgress", {{"modelId", "m_cancel"}});
+        bool ok = (cr["ok"] == true) && (gp["ok"] == false);
+        if (ok) { report("download.cancel_removes_task", true, "cancelled + removed"); passed++; }
+        else { report("download.cancel_removes_task", false, "cancelOk=" + std::string(cr.value("ok",false)?"1":"0") + " getProgress=" + gp.dump()); failed++; }
+        remove(path.c_str());
+    } catch (const std::exception& e) { report("download.cancel_removes_task", false, e.what()); failed++; }
+#endif // _WIN32
 
     std::cout << "Passed: " << passed << ", Failed: " << failed << ", Total: " << (passed + failed) << std::endl;
     std::cout << "=== End C++ Tests ===" << std::endl;

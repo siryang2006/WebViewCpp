@@ -7,7 +7,10 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 #include <chrono>
+#include <cstdio>
+#include <curl/curl.h>
 
 struct curl_context_t;
 
@@ -41,6 +44,7 @@ private:
         std::atomic<bool> paused{false};
         std::atomic<bool> cancelled{false};
         std::atomic<bool> completed{false};
+        std::atomic<bool> threadRunning{false};
         std::thread thread;
         WebViewWrapper* wv = nullptr;
         DownloadService* service = nullptr;
@@ -49,8 +53,13 @@ private:
         std::mutex pauseMutex;
         std::condition_variable pauseCv;
         bool pausedFlag = false;
-        void* curlHandle = nullptr;
+        std::atomic<CURL*> curlHandle{nullptr};
         FILE* fileHandle = nullptr;
+        // Range handling: file is opened lazily inside writeCallback once we know
+        // whether the server honored the resume request (HTTP 206) or not.
+        long long resumeFrom = 0;       // bytes already on disk we asked to resume from
+        long httpStatus = 0;            // status line code captured by headerCallback
+        bool fileOpened = false;        // guards lazy open in writeCallback
     };
 
     void downloadWorker(std::shared_ptr<DownloadTask> task);
@@ -59,7 +68,8 @@ private:
     static json getModelIdFromArgs(const json& args);
 
     static size_t writeCallback(void* ptr, size_t size, size_t nmemb, void* userdata);
-    static int progressCallback(void* clientp, long long dltotal, long long dlnow, long long ultotal, long long ulnow);
+    static size_t headerCallback(char* buffer, size_t size, size_t nitems, void* userdata);
+    static int progressCallback(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow);
 
     std::string m_baseDir;
     WebViewWrapper* m_wv = nullptr;
