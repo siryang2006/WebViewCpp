@@ -212,10 +212,10 @@ bool Subprocess::getMetrics(ProcessMetrics& out) {
             int64_t cpuDelta = cpuTime - m_cpuTimeLast;
             int64_t wallDelta = wallTime - m_wallTimeLast;
             if (wallDelta > 0) {
-                // 乘 100 得到百分比，乘以 CPU 核心数补偿
+                // 匹配任务管理器：总 CPU 使用率 / 核心数
                 SYSTEM_INFO si = {};
                 GetSystemInfo(&si);
-                out.cpuPercent = (double)cpuDelta / wallDelta * 100.0 * si.dwNumberOfProcessors;
+                out.cpuPercent = (double)cpuDelta / wallDelta / si.dwNumberOfProcessors * 100.0;
                 if (out.cpuPercent > 100.0) out.cpuPercent = 100.0;
             }
         }
