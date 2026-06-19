@@ -160,13 +160,11 @@
     <div class="feature-cards-section">
       <div class="feature-cards-header">
         <span class="feature-cards-title">功能</span>
-        <div class="feature-cards-nav">
-          <button class="nav-btn" id="cardsPrev">‹</button>
-          <button class="nav-btn" id="cardsNext">›</button>
-        </div>
       </div>
-      <div class="feature-cards-track" id="cardsTrack">
-        <div class="feature-card active" data-feature="chat">
+      <div class="feature-cards-track-wrap">
+        <button class="nav-btn track-prev" id="cardsPrev">‹</button>
+        <div class="feature-cards-track" id="cardsTrack">
+          <div class="feature-card active" data-feature="chat">
           <div class="feature-card-icon">💬</div>
           <div class="feature-card-label">智能对话</div>
         </div>
@@ -215,6 +213,8 @@
           <div class="feature-card-label">TTS</div>
         </div>
       </div>
+      <button class="nav-btn track-next" id="cardsNext">›</button>
+    </div>
     </div>
 
     <!-- 内容区 -->
