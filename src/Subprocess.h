@@ -51,9 +51,12 @@ public:
 
     // 获取进程 PID
     int pid() const { return m_pid; }
-
     // 获取退出码
     int exitCode() const { return m_exitCode; }
+
+    // 获取最近一次失败的详细错误描述
+    std::string lastError() const { return m_lastError; }
+
 
     // 获取资源占用（自动采样 CPU 百分比）
     bool getMetrics(ProcessMetrics& out);
@@ -82,5 +85,6 @@ private:
     std::atomic<int> m_exitCode{0};
     std::thread m_monitor;
     OnExitFn m_onExit;
+    std::string m_lastError;
     std::mutex m_mutex;
 };

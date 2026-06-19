@@ -32,6 +32,7 @@ bool Subprocess::start(const std::string& exePath,
 
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    m_lastError.clear();
     m_onExit = onExit;
     m_exitCode = 0;
     m_intentionalStop = false;
@@ -59,7 +60,9 @@ bool Subprocess::start(const std::string& exePath,
     );
 
     if (!success) {
-        std::cerr << "[Subprocess] Failed to start " << exePath << ": " << GetLastError() << "\n";
+        DWORD err = GetLastError();
+        m_lastError = "CreateProcessA failed: error " + std::to_string(err);
+        std::cerr << "[Subprocess] Failed to start " << exePath << ": " << err << "\n";
         return false;
     }
 
@@ -81,6 +84,8 @@ bool Subprocess::start(const std::string& exePath,
             if (GetExitCodeProcess(m_process, &exitCode) && exitCode != STILL_ACTIVE) {
                 m_exitCode = (int)exitCode;
                 m_running = false;
+                m_lastError = "Process exited early with code " + std::to_string(exitCode);
+                std::cerr << "[Subprocess] " << exePath << " exited early (code=" << exitCode << ")\n";
                 return false;
             }
 
@@ -91,6 +96,8 @@ bool Subprocess::start(const std::string& exePath,
         }
         // 健康检查超时：标记主动停止并杀进程（仍持有锁，用 *Locked 版本）。
         m_intentionalStop = true;
+        m_lastError = "Health check timed out after " + std::to_string(timeoutMs) + "ms";
+        std::cerr << "[Subprocess] " << exePath << " health check timed out after " << timeoutMs << "ms\n";
         killProcessLocked(false);
         return false;
     }

@@ -68,9 +68,11 @@ private:
     int getAvailablePort(const std::vector<int>& exclude);
 
     // 启动一个 llama-server 子进程，成功时通过 out_port 返回端口、out_server 返回进程。
+    // 失败时 error_detail 描述具体原因。
     bool startServer(const std::string& gguf_path, const LlamaParams& params,
                      const std::vector<int>& excludePorts,
-                     int& out_port, std::unique_ptr<Subprocess>& out_server);
+                     int& out_port, std::unique_ptr<Subprocess>& out_server,
+                     std::string& error_detail);
     // 停止指定 modelId；modelId 为空停止全部。
     void stopServers(const std::string& modelId);
 

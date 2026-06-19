@@ -6,6 +6,10 @@
 #include <iostream>
 #include <algorithm>
 #include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#include <tlhelp32.h>
+#endif
 
 ChatService::ChatService() {
     // curl 全局初始化由 main/WinMain 统一调用一次（libcurl 文档要求 call-once，
@@ -56,9 +60,42 @@ const json& ChatService::unwrapArgs(const json& args) {
     return args;
 }
 
+// 按进程名杀死未托管的进程（解决残留 llama-server 占端口，但放过已在 m_models 中的）
+static void killOrphanedByName(const std::string& name, const std::vector<int>& excludePids) {
+#ifdef _WIN32
+    std::wstring wname(name.begin(), name.end());
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return;
+    PROCESSENTRY32W pe = {sizeof(pe)};
+    if (Process32FirstW(snapshot, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, wname.c_str()) == 0 &&
+                std::find(excludePids.begin(), excludePids.end(), (int)pe.th32ProcessID) == excludePids.end()) {
+                HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
+                if (hProcess) {
+                    TerminateProcess(hProcess, 1);
+                    CloseHandle(hProcess);
+                }
+            }
+        } while (Process32NextW(snapshot, &pe));
+    }
+    CloseHandle(snapshot);
+#endif
+}
+
 void ChatService::startModel(const std::string& id, const json& args, WebViewWrapper* wv) {
     // wv由WebViewWrapper保证非空，直接存储
     m_wv = wv;
+
+    // 启动前先清理残留的 llama-server 进程，但放过已在 m_models 中的
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        std::vector<int> managedPids;
+        for (auto& [mid, rm] : m_models) {
+            if (rm->server) managedPids.push_back(rm->server->pid());
+        }
+        killOrphanedByName("llama-server.exe", managedPids);
+    }
 
     const json& p = unwrapArgs(args);
 
@@ -79,63 +116,63 @@ void ChatService::startModel(const std::string& id, const json& args, WebViewWra
     params.threads = p.value("threads", 4);
     params.flash_attention = p.value("flashAttn", true) ? 1 : 0;
 
-    wv->dispatch_task([this, id, model_id, gguf_path, params, wv]() {
-        // 该模型已在运行 → 幂等返回 running。
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            auto it = m_models.find(model_id);
-            if (it != m_models.end() && it->second->running.load()) {
-                int port = it->second->port;
-                json d = json::object();
-                d["status"] = "running";
-                d["modelId"] = model_id;
-                d["port"] = port;
-                wv->resolve(id, CppObject::ok_result(d));
-                return;
-            }
-        }
-
-        // 检查 llama-server 是否存在
-        std::string server_path = getServerPath();
-        if (!std::ifstream(server_path).good()) {
-            json d = json::object();
-            d["status"] = "need_download";
-            d["message"] = "llama-server not found";
-            wv->resolve(id, CppObject::ok_result(d));
-            return;
-        }
-
-        // 收集已占用端口，避免与已运行模型冲突。
-        std::vector<int> usedPorts;
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            for (auto& [mid, rm] : m_models) {
-                if (rm->running.load()) usedPorts.push_back(rm->port);
-            }
-        }
-
-        int port = 0;
-        std::unique_ptr<Subprocess> server;
-        if (startServer(gguf_path, params, usedPorts, port, server)) {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            auto rm = std::make_unique<RunningModel>();
-            rm->model_id = model_id;
-            rm->gguf_path = gguf_path;
-            rm->params = params;
-            rm->port = port;
-            rm->server = std::move(server);
-            rm->running = true;
-            m_models[model_id] = std::move(rm);
-
+    // 该模型已在运行 → 幂等返回 running。
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_models.find(model_id);
+        if (it != m_models.end() && it->second->running.load()) {
+            int port = it->second->port;
             json d = json::object();
             d["status"] = "running";
             d["modelId"] = model_id;
             d["port"] = port;
             wv->resolve(id, CppObject::ok_result(d));
-        } else {
-            wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR, "Failed to start llama-server"));
+            return;
         }
-    });
+    }
+
+    // 检查 llama-server 是否存在
+    std::string server_path = getServerPath();
+    if (!std::ifstream(server_path).good()) {
+        json d = json::object();
+        d["status"] = "need_download";
+        d["message"] = "llama-server not found";
+        wv->resolve(id, CppObject::ok_result(d));
+        return;
+    }
+
+    // 收集已占用端口，避免与已运行模型冲突。
+    std::vector<int> usedPorts;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (auto& [mid, rm] : m_models) {
+            if (rm->running.load()) usedPorts.push_back(rm->port);
+        }
+    }
+
+    int port = 0;
+    std::unique_ptr<Subprocess> server;
+    std::string start_err;
+    if (startServer(gguf_path, params, usedPorts, port, server, start_err)) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto rm = std::make_unique<RunningModel>();
+        rm->model_id = model_id;
+        rm->gguf_path = gguf_path;
+        rm->params = params;
+        rm->port = port;
+        rm->server = std::move(server);
+        rm->running = true;
+        m_models[model_id] = std::move(rm);
+
+        json d = json::object();
+        d["status"] = "running";
+        d["modelId"] = model_id;
+        d["port"] = port;
+        wv->resolve(id, CppObject::ok_result(d));
+    } else {
+        wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR,
+            start_err.empty() ? "Failed to start llama-server" : ("Failed to start llama-server: " + start_err).c_str()));
+    }
 }
 
 json ChatService::stopModel(const json& args) {
@@ -353,9 +390,14 @@ int ChatService::getAvailablePort(const std::vector<int>& exclude) {
 
 bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& params,
                               const std::vector<int>& excludePorts,
-                              int& out_port, std::unique_ptr<Subprocess>& out_server) {
+                              int& out_port, std::unique_ptr<Subprocess>& out_server,
+                              std::string& error_detail) {
     int port = getAvailablePort(excludePorts);
-    if (port == 0) return false;
+    if (port == 0) {
+        error_detail = "No available port (8080-9090 all in use)";
+        std::cerr << "[ChatService] " << error_detail << "\n";
+        return false;
+    }
 
     std::string exe_dir = getExeDir();
 
@@ -376,7 +418,7 @@ bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& p
     args << " -c " << params.ctx;
     args << " -ngl " << params.n_gpu_layers;
     args << " -t " << params.threads;
-    if (params.flash_attention) args << " -fa";
+    if (params.flash_attention) args << " --flash-attn 1";
     if (params.thinking) args << " --reasoning-format auto";
     args << " --host 127.0.0.1";
     args << " --port " << port;
@@ -400,6 +442,14 @@ bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& p
     // 等都能正确解析。健康检查放宽到 30s —— 大模型加载 + warmup 可能较慢。
     auto server = std::make_unique<Subprocess>();
     bool ok = server->start(getServerPath(), args.str(), exe_dir, healthCheck, 30000, nullptr);
+
+    if (!ok) {
+        std::string sub_err = server->lastError();
+        if (!sub_err.empty()) {
+            if (error_detail.empty()) error_detail = sub_err;
+            else error_detail += "; " + sub_err;
+        }
+    }
 
     if (ok) {
         out_port = port;

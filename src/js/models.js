@@ -470,6 +470,7 @@
 
   /* ---- 从 models.json 加载（经 C++ config bridge）---- */
   function loadModels() {
+    modelList.innerHTML = '<div style="text-align:center;padding:48px;color:var(--text-muted);font-size:13px;">⏳ 正在加载模型列表…</div>';
     window.__cpp__.config.read('models.json')
       .then(function(data) {
         window.AppState.models = (data.models || []).map(function(m) {

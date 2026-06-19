@@ -14,6 +14,7 @@ import json
 import http.client
 import subprocess
 import os
+import re
 import sys
 import time
 
@@ -33,9 +34,9 @@ def safe_print(s):
     print(str(s).encode('ascii', 'replace').decode())
 
 
-def pick_smallest_gguf():
+def pick_smallest_gguf(count=1):
     """在 build/Debug/downloads 下查找体积最小的有效 gguf 文件，
-    返回 (modelId, 相对 exe 目录的路径)；找不到返回 None。
+    返回 [(modelId, relPath), ...]；count=1 返回 [(modelId, rel)]，找不到返回 None。
     用于真实启动模型测试——选最小的以缩短加载时间。
     gguf 文件大于 1MB 才算有效（过滤占位/损坏文件）。"""
     exe_dir = os.path.dirname(EXE_PATH)
@@ -59,8 +60,8 @@ def pick_smallest_gguf():
     if not candidates:
         return None
     candidates.sort()
-    _size, model_id, rel = candidates[0]
-    return (model_id, rel)
+    result = [(mid, rel) for _sz, mid, rel in candidates[:count]]
+    return result if count != 1 else result[0]
 
 
 def get_page_ws_url(port):
@@ -75,12 +76,12 @@ def get_page_ws_url(port):
     raise RuntimeError("No page target found")
 
 
-async def send_recv(ws, cmd_id, method, params=None):
+async def send_recv(ws, cmd_id, method, params=None, deadline_s=10):
     msg = {"id": cmd_id, "method": method}
     if params:
         msg["params"] = params
     await ws.send(json.dumps(msg))
-    deadline = asyncio.get_event_loop().time() + 10
+    deadline = asyncio.get_event_loop().time() + deadline_s
     while asyncio.get_event_loop().time() < deadline:
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=1)
@@ -98,7 +99,7 @@ async def evaluate(ws, cid, expr, await_promise=False, timeout_ms=3000):
         "returnByValue": True,
         "awaitPromise": await_promise,
         "timeout": timeout_ms
-    })
+    }, deadline_s=timeout_ms // 1000 + 10)
     if not resp:
         raise TestFailed(f"Timeout evaluating: {expr[:60]}")
     if "exceptionDetails" in resp.get("result", {}):
@@ -161,7 +162,7 @@ async def run_cdp_tests():
 
         cid, val = await evaluate(ws, cid,
             "Array.from(document.querySelectorAll('.tab-btn')).map(b=>b.textContent.trim())")
-        check("topbar tabs labels", val == ["应用", "模型"], f"got {val}")
+        check("topbar tabs labels", val == ["模型", "应用"], f"got {val}")
 
         # Feature cards on app page
         cid, val = await evaluate(ws, cid,
@@ -178,13 +179,13 @@ async def run_cdp_tests():
             "document.getElementById('inputBox') !== null")
         check("input box exists", val is True)
 
-        # Model page (hidden initially)
+        # Model page (active initially)
         cid, val = await evaluate(ws, cid,
             "document.getElementById('modelPage') !== null")
         check("model page exists", val is True)
         cid, val = await evaluate(ws, cid,
-            "!document.getElementById('modelPage').classList.contains('active')")
-        check("model page hidden initially", val is True)
+            "document.getElementById('modelPage').classList.contains('active')")
+        check("model page active initially", val is True)
 
         # ========== __cpp__ Object Structure ==========
 
@@ -422,23 +423,17 @@ async def run_cdp_tests():
 
         # ========== UI Interaction Tests ==========
 
-        # Feature card click - should add active class
+        # Feature card click - should add active class (先切到应用页)
+        cid, val = await evaluate(ws, cid,
+            "(function(){document.querySelector('.tab-btn[data-tab=\"app\"]').click();return 'switched';})()")
+        await asyncio.sleep(0.2)
         cid, val = await evaluate(ws, cid,
             "(function(){var c=document.querySelectorAll('.feature-card');c[1].click();return c[1].classList.contains('active');})()")
         check("feature card click adds active class", val)
 
-        # Send message
+        # Model tab - switch to model page (index 0)
         cid, val = await evaluate(ws, cid,
-            "(function(){var i=document.getElementById('inputBox');i.value='hello';i.dispatchEvent(new Event('input'));document.getElementById('sendBtn').click();return 'sent';})()")
-        check("send message click works", val == "sent")
-        await asyncio.sleep(1.5)
-        cid, val = await evaluate(ws, cid,
-            "document.querySelectorAll('.msg.user').length")
-        check("user message appears in chat", val >= 1)
-
-        # Model tab - switch to model page
-        cid, val = await evaluate(ws, cid,
-            "(function(){document.querySelectorAll('.tab-btn')[1].click();return 'switched';})()")
+            "(function(){document.querySelectorAll('.tab-btn')[0].click();return 'switched';})()")
         check("model tab click switches tab", val == "switched")
         await asyncio.sleep(0.5)
         cid, val = await evaluate(ws, cid,
@@ -709,6 +704,23 @@ async def run_cdp_tests():
         check("chatService.getAllMetrics returns array",
               isinstance(json.loads(val), list), f"got {val}")
 
+        # 对话页模型选择器：空闲（无运行模型）时应存在且置灰，提示「无运行模型」
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                var sel = document.getElementById('chatModelSelect');
+                if (!sel) return JSON.stringify({exists:false});
+                return JSON.stringify({
+                    exists:true, disabled:sel.disabled,
+                    text:(sel.options[0]||{}).text || ''
+                });
+            })()
+        """, timeout_ms=3000)
+        print(f"  DIAG: idle model selector = {val}")
+        seld = json.loads(val)
+        check("chat model selector exists", seld.get("exists") is True, f"got {val}")
+        check("chat model selector disabled when no model running",
+              seld.get("disabled") is True and "无运行模型" in seld.get("text", ""), f"got {val}")
+
         # startModel 缺少 modelId 时应返回 INVALID_ARGUMENTS（验证参数解包正确，
         # 不再抛 json type_error.306）
         cid, val = await evaluate(ws, cid,
@@ -745,7 +757,7 @@ async def run_cdp_tests():
             print(f"  DIAG: real launch model={model_id} gguf={gguf_rel}")
             launch_js = (
                 '(async()=>{ try {'
-                ' var r = await window.__cpp__.chat.startModel({modelId:"' + model_id + '",'
+                ' var r = await window.chatService.startModel({modelId:"' + model_id + '",'
                 ' ggufPath:"' + gguf_rel.replace('\\', '/') + '", ctx:512, ngl:0, threads:2, flashAttn:false});'
                 ' return JSON.stringify(r); } catch(e) { return "EXC:" + String(e); } })()'
             )
@@ -871,6 +883,191 @@ async def run_cdp_tests():
                 # 关闭详情页
                 await evaluate(ws, cid, 'document.getElementById("detailBackBtn").click()',
                     await_promise=False, timeout_ms=2000)
+
+                # ---- UI: 对话页模型选择器 ----
+                # 模型已被标记 running 并发出 models:changed（上面行指标测试已设置）；
+                # 切回应用页，验证选择器列出该模型且选中、可用。
+                await evaluate(ws, cid,
+                    'document.querySelector(\'.tab-btn[data-tab="app"]\').click(); '
+                    'if (window.AppBus) window.AppBus.emit("models:changed");',
+                    await_promise=False, timeout_ms=2000)
+                cid, val = await evaluate(ws, cid, """
+                    new Promise(function(resolve){
+                        var tries = 0;
+                        function chk(){
+                            tries++;
+                            var sel = document.getElementById('chatModelSelect');
+                            if (sel && !sel.disabled && sel.options.length > 0
+                                && sel.options[0].value !== '') {
+                                resolve(JSON.stringify({
+                                    disabled: sel.disabled,
+                                    count: sel.options.length,
+                                    value: sel.value,
+                                    selected: window.AppState.selectedModelId
+                                }));
+                            } else if (tries > 20) {
+                                resolve('TIMEOUT:' + (sel ? sel.options.length : 'no-el'));
+                            } else setTimeout(chk, 200);
+                        }
+                        chk();
+                    })
+                """, await_promise=True, timeout_ms=6000)
+                print(f"  DIAG: model selector = {val}")
+                sel = json.loads(val) if not str(val).startswith('TIMEOUT') else {}
+                check("chat model selector enabled with running model",
+                      sel.get("disabled") is False and (sel.get("count") or 0) >= 1, f"got {val}")
+                check("chat model selector defaults to the running model",
+                      sel.get("value") == model_id and sel.get("selected") == model_id, f"got {val}")
+
+                # ---- 智能对话：模拟用户输入并验证 UI 显示（chatService 已发 model:started 事件）----
+                chat_prompt = "Hello! Please introduce yourself in one sentence. Who are you?"
+                cid, val = await evaluate(ws, cid, """
+                    (async () => {
+                        /* 切回到应用页 + 智能对话卡片 */
+                        document.querySelectorAll('.tab-btn')[1].click();
+                        await new Promise(function(r){ setTimeout(r, 200); });
+                        document.querySelectorAll('.feature-card')[0].click();
+                        await new Promise(function(r){ setTimeout(r, 300); });
+                        /* 输入文字并发送 */
+                        var ib = document.getElementById('inputBox');
+                        var sb = document.getElementById('sendBtn');
+                        ib.value = \"""" + chat_prompt + """\";
+                        ib.dispatchEvent(new Event('input', {bubbles: true}));
+                        sb.click();
+                        /* 等待用户消息在 UI 出现 */
+                        var userEl = null;
+                        for (var i = 0; i < 40; i++) {
+                            var msgs = document.querySelectorAll('.msg.user .msg-bubble');
+                            if (msgs.length > 0) { userEl = msgs[msgs.length-1]; break; }
+                            await new Promise(function(r){ setTimeout(r, 100); });
+                        }
+                        var userText = userEl ? userEl.textContent : 'TIMEOUT_USER';
+                        /* 等待机器人回复完成（游标字符消失 = 流结束） */
+                        var botEl = null;
+                        for (var i = 0; i < 200; i++) {
+                            var bots = document.querySelectorAll('.msg.bot .msg-bubble');
+                            if (bots.length > 0) {
+                                var bubble = bots[bots.length-1];
+                                var txt = bubble.textContent.trim();
+                                if (txt.length > 0 && txt.indexOf('\u258b') === -1) {
+                                    botEl = bubble; break;
+                                }
+                            }
+                            await new Promise(function(r){ setTimeout(r, 300); });
+                        }
+                        if (!botEl) {
+                            var bots = document.querySelectorAll('.msg.bot .msg-bubble');
+                            if (bots.length > 0) botEl = bots[bots.length-1];
+                        }
+                        var botText = botEl ? botEl.textContent : 'TIMEOUT_BOT';
+                        return JSON.stringify({ userText: userText, botText: botText });
+                    })()
+                """, await_promise=True, timeout_ms=120000)
+                print(f"  DIAG: chat UI result (len={len(val)}) = {val[:400]}")
+                chat_ui = json.loads(val)
+                user_text = chat_ui.get("userText", "")
+                bot_text = chat_ui.get("botText", "")
+                check("chat user message appears in UI",
+                      user_text != "TIMEOUT_USER" and len(user_text) > 0,
+                      f"got userText={user_text[:80]}")
+                check("chat user message shows prompt text",
+                      chat_prompt in user_text,
+                      f"expected prompt '{chat_prompt[:40]}' in userText '{user_text[:80]}'")
+                check("chat bot response appears in UI",
+                      bot_text != "TIMEOUT_BOT" and len(bot_text) > 0,
+                      f"got botText={bot_text[:80]}")
+                check("chat bot response has substantive content",
+                      len(bot_text) >= 30,
+                      f"got {len(bot_text)} chars: {bot_text[:80]}")
+                check("chat bot response contains words",
+                      bool(re.search(r'[A-Za-z]{3,}', bot_text)),
+                      f"no words found in: {bot_text[:100]}")
+                check("chat bot response is multi-word",
+                      bool(re.search(r'\s', bot_text)),
+                      f"single word only: {bot_text[:100]}")
+                has_err = bool(re.search(r'error|exception|undefined|null|unable|sorry',
+                                         bot_text[:200], re.I))
+                if has_err:
+                    safe_print(f"  WARN: early response contains error keyword: {bot_text[:200]}")
+
+                # ---- 读取返回内容：发送另一条消息并分析 bot 回复结构 ----
+                cid, val = await evaluate(ws, cid, """
+                    (async () => {
+                        var ib = document.getElementById('inputBox');
+                        var sb = document.getElementById('sendBtn');
+                        ib.value = 'What can you do? Reply in one sentence.';
+                        ib.dispatchEvent(new Event('input', {bubbles: true}));
+                        sb.click();
+                        var botEl = null;
+                        for (var i = 0; i < 200; i++) {
+                            var bots = document.querySelectorAll('.msg.bot .msg-bubble');
+                            if (bots.length > 0) {
+                                var bubble = bots[bots.length-1];
+                                var txt = bubble.textContent.trim();
+                                if (txt.length > 0 && txt.indexOf('\u258b') === -1) {
+                                    botEl = bubble; break;
+                                }
+                            }
+                            await new Promise(function(r){ setTimeout(r, 300); });
+                        }
+                        var text = botEl ? botEl.textContent : 'TIMEOUT_BOT';
+                        return JSON.stringify({ text: text, length: text.length, words: text.split(/\\s+/).length });
+                    })()
+                """, await_promise=True, timeout_ms=120000)
+                resp2 = json.loads(val)
+                bot2 = resp2.get("text", "")
+                safe_print(f"  DIAG: second bot reply ({resp2.get('length',0)} chars, {resp2.get('words',0)} words) = {bot2[:200]}")
+                check("second bot reply received", bot2 != "TIMEOUT_BOT" and len(bot2) > 0, f"got {bot2[:80]}")
+                check("second bot reply has >= 3 words",
+                      resp2.get("words", 0) >= 3,
+                      f"got {resp2.get('words',0)} words: {bot2[:100]}")
+                check("second bot reply starts with capital letter",
+                      len(bot2) > 0 and bot2[0].isupper(),
+                      f"first char '{bot2[:1]}' not uppercase")
+                check("second bot reply ends with sentence punctuation",
+                      len(bot2) > 0 and bot2.strip()[-1] in '.!?',
+                      f"last char '{bot2.strip()[-1:]}' not punctuation")
+
+                # ---- 多模型并行运行测试（用已知能用的第二个模型）----
+                model2_id = "dolphin-gemma2-2b"
+                model2_gguf = "downloads/dolphin-gemma2-2b/dolphin-2.9.4-gemma2-2b-q4_k_m.gguf"
+                if True:
+                    safe_print(f"  DIAG: starting second model {model2_id} gguf={model2_gguf}")
+                    safe_print(f"  DIAG: starting second model {model2_id} gguf={model2_gguf}")
+                    cid, val = await evaluate(ws, cid,
+                        f'(async()=>{{ var r = await window.chatService.startModel({{modelId:"{model2_id}",ggufPath:"{model2_gguf}",ctx:4096,ngl:-1,threads:4,flashAttn:true,thinking:false}}); return JSON.stringify(r); }})()',
+                        await_promise=True, timeout_ms=120000)
+                    safe_print(f"  DIAG: second model startModel = {val}")
+                    r2 = json.loads(val)
+                    check("second model starts successfully",
+                          r2.get("ok") is True and r2.get("data", {}).get("status") == "running",
+                          f"got {val}")
+
+                    # 两个模型都应出现在 getStatus()
+                    cid, val = await evaluate(ws, cid,
+                        '(async()=>{ var r = await window.__cpp__.chat.getStatus({}); return JSON.stringify(r); })()',
+                        await_promise=True, timeout_ms=5000)
+                    sd = json.loads(val).get("data", {})
+                    models = sd.get("models", [])
+                    mids = [m.get("modelId") for m in models]
+                    ports = [m.get("port") for m in models]
+                    safe_print(f"  DIAG: multi-model getStatus = models={mids} ports={ports}")
+                    check("both models appear in getStatus",
+                          model_id in mids and model2_id in mids,
+                          f"got modelIds={mids}")
+                    check("two models have different ports",
+                          len(set(ports)) == len(ports) >= 2,
+                          f"got ports={ports}")
+
+                    # 停止第二个模型
+                    cid, val = await evaluate(ws, cid,
+                        '(async()=>{ var r = await window.__cpp__.chat.stopModel({modelId:"' + model2_id + '"}); return JSON.stringify(r); })()',
+                        await_promise=True, timeout_ms=15000)
+                    sd = json.loads(val).get("data", {})
+                    check("stop second model returns stopped",
+                          sd.get("status") == "stopped" and sd.get("modelId") == model2_id,
+                          f"got {val}")
+                    safe_print(f"  DIAG: stopped second model {model2_id}")
 
                 # 停止该模型
                 cid, val = await evaluate(ws, cid,

@@ -25,8 +25,8 @@
   </div>
 
   <div class="topbar-tabs">
-    <button class="tab-btn active" data-tab="app">应用</button>
-    <button class="tab-btn" data-tab="model">模型</button>
+    <button class="tab-btn active" data-tab="model">模型</button>
+    <button class="tab-btn" data-tab="app">应用</button>
   </div>
 
   <div class="topbar-spacer"></div>
@@ -244,10 +244,18 @@
 
       <!-- 输入区 -->
       <div class="input-area">
-        <div class="mode-selector">
-          <button class="mode-btn active" data-mode="balance">Auto · 平衡模式</button>
-          <button class="mode-btn" data-mode="speed">速度优先</button>
-          <button class="mode-btn" data-mode="quality">质量优先</button>
+        <div class="input-toolbar">
+          <div class="mode-selector">
+            <button class="mode-btn active" data-mode="balance">Auto · 平衡模式</button>
+            <button class="mode-btn" data-mode="speed">速度优先</button>
+            <button class="mode-btn" data-mode="quality">质量优先</button>
+          </div>
+          <div class="chat-model-picker">
+            <span class="chat-model-picker-label">🧠</span>
+            <select class="chat-model-select" id="chatModelSelect" title="选择对话使用的模型">
+              <option value="">无运行模型</option>
+            </select>
+          </div>
         </div>
         <div class="input-wrapper">
           <textarea class="input-box" id="inputBox" rows="1" placeholder="输入你想问的问题…" autofocus></textarea>

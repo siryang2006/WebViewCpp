@@ -14,6 +14,7 @@ class ChatService {
     // 启动模型：参数透传到 llama-server 命令行
     // params: { modelId, ggufPath, ctx, ngl, threads, flashAttn, thinking }
     startModel(params) {
+        var self = this;
         return window.__cpp__.chat.startModel({
             modelId: params.modelId,
             ggufPath: params.ggufPath,
@@ -22,12 +23,29 @@ class ChatService {
             threads: params.threads || 4,
             flashAttn: params.flashAttn !== false,
             thinking: !!params.thinking
+        }).then(function(r) {
+            if (r && r.ok && r.data && r.data.status === 'running') {
+                AppBus.emit('model:started', {
+                    id: params.modelId,
+                    name: params.modelId,
+                    port: r.data.port
+                });
+            }
+            return r;
         });
     }
 
     // 停止模型。modelId 可选：传入停止指定模型，不传停止全部。
     stopModel(modelId) {
-        return window.__cpp__.chat.stopModel(modelId ? { modelId: modelId } : {});
+        var self = this;
+        return window.__cpp__.chat.stopModel(modelId ? { modelId: modelId } : {}).then(function(r) {
+            if (r && r.ok) {
+                var stoppedId = modelId || null;
+                AppBus.emit('model:stopped', { id: stoppedId });
+                AppBus.emit('models:changed');
+            }
+            return r;
+        });
     }
 
     // 流式对话：onToken(token) 逐 token 回调，返回 Promise 在完成时 resolve
@@ -61,9 +79,14 @@ class ChatService {
             var req = { prompt: prompt, callback: cbId };
             if (modelId) req.modelId = modelId;
             window.__cpp__.chat.chat(req)
-                .then(function() {
-                    cleanup();
-                    resolve();
+                .then(function(r) {
+                    if (r && !r.ok) {
+                        cleanup();
+                        reject(new Error(r.message || 'Chat request failed'));
+                    } else {
+                        cleanup();
+                        resolve();
+                    }
                 })
                 .catch(function(e) {
                     cleanup();

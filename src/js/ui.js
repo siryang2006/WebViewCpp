@@ -45,7 +45,7 @@ document.querySelectorAll('.mode-btn').forEach(function(btn) {
   });
 });
 
-/* ---- Tab 切换（应用 / 模型）---- */
+/* ---- Tab 切换（模型 / 应用）---- */
 document.querySelectorAll('.tab-btn').forEach(function(btn) {
   btn.addEventListener('click', function() {
     document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
@@ -62,6 +62,11 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
     }
   });
 });
+
+// 初始显示模型页
+(function() {
+  document.querySelector('.tab-btn[data-tab="model"]').click();
+})();
 
 /* ---- 侧边栏对话项点击 ---- */
 document.querySelectorAll('.chat-item').forEach(function(item) {

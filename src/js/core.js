@@ -37,8 +37,9 @@ function parseCtxToTokens(ctx) {
 // 共享状态：跨模块只读/写这一个对象，避免散落的全局变量
 // ================================================================
 window.AppState = {
-  models: [],     // 模型列表（models.js 维护）
-  apiPort: 0       // 当前运行模型的 HTTP 端口（service-panel.js 维护，chat.js 读取）
+  models: [],         // 模型列表（models.js 维护）
+  apiPort: 0,          // 当前运行模型的 HTTP 端口（service-panel.js 维护，chat.js 读取）
+  selectedModelId: ''  // 对话页选中的运行模型 id（chat.js 维护）
 };
 
 // ================================================================

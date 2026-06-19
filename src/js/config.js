@@ -113,6 +113,11 @@
         AppBus.emit('models:changed');
       } else if (r && r.ok) {
         AppBus.emit('model:started', { id: m.id, name: m.name, port: r.data.port });
+      } else {
+        if (r && r.message) alert('启动失败: ' + r.message);
+        m.status = 'downloaded';
+        AppBus.emit('models:changed');
+        AppBus.emit('model:stopped', { id: m.id });
       }
     }).catch(function(e) {
       alert('启动失败: ' + e);

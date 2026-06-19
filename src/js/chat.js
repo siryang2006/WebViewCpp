@@ -1,16 +1,60 @@
 /* ================================================================
    chat.js — 聊天 UI + 流式渲染
    推理能力由 window.chatService 提供（C++ ChatService）。
-   本模块只负责消息气泡渲染、输入框交互；运行模型端口读 AppState.apiPort。
+   本模块负责消息气泡渲染、输入框交互、运行模型选择器；
+   选中的模型 id 存于 AppState.selectedModelId，推理时按 id 路由。
    ================================================================ */
 (function() {
   var chatArea = $('chatArea');
   var welcomeCard = $('welcomeCard');
   var inputBox = $('inputBox');
   var sendBtn = $('sendBtn');
+  var modelSelect = $('chatModelSelect');
 
   var hasMessages = false;
   var isTyping = false;
+
+  // 取当前运行中的模型列表（status === 'running'）
+  function runningModels() {
+    return (window.AppState.models || []).filter(function(m) { return m.status === 'running'; });
+  }
+
+  // 重建模型下拉：列出运行中的模型；无则置灰提示。
+  // 尽量保留当前选择；选中项失效时回退到第一个运行模型。
+  function refreshModelSelect() {
+    if (!modelSelect) return;
+    var running = runningModels();
+    var prev = window.AppState.selectedModelId;
+
+    if (!running.length) {
+      modelSelect.innerHTML = '<option value="">无运行模型</option>';
+      modelSelect.disabled = true;
+      window.AppState.selectedModelId = '';
+      return;
+    }
+
+    modelSelect.disabled = false;
+    modelSelect.innerHTML = running.map(function(m) {
+      return '<option value="' + escapeHtml(m.id) + '">' + escapeHtml(m.name || m.id) + '</option>';
+    }).join('');
+
+    // 保留原选择；失效则用第一个
+    var stillValid = running.some(function(m) { return m.id === prev; });
+    var sel = stillValid ? prev : running[0].id;
+    modelSelect.value = sel;
+    window.AppState.selectedModelId = sel;
+  }
+
+  if (modelSelect) {
+    modelSelect.addEventListener('change', function() {
+      window.AppState.selectedModelId = modelSelect.value;
+    });
+  }
+
+  // 模型启动/停止/列表变化时刷新选择器
+  AppBus.on('model:started', refreshModelSelect);
+  AppBus.on('model:stopped', refreshModelSelect);
+  AppBus.on('models:changed', refreshModelSelect);
 
   function ensureChatVisible() {
     if (!hasMessages) {
@@ -66,9 +110,11 @@
     inputBox.value = '';
     inputBox.style.height = 'auto';
 
-    // 有运行中的模型才走真实推理
-    if (window.AppState.apiPort && window.chatService) {
-      await streamChat(text);
+    // 选中的运行模型才走真实推理
+    var modelId = window.AppState.selectedModelId;
+    var hasRunning = runningModels().some(function(m) { return m.id === modelId; });
+    if (modelId && hasRunning && window.chatService) {
+      await streamChat(text, modelId);
     } else {
       addTyping();
       await new Promise(function(r) { setTimeout(r, 400); });
@@ -78,7 +124,7 @@
   }
 
   // 流式对话：UI 渲染层。token 回调注册/清理由 chatService 负责。
-  function streamChat(prompt) {
+  function streamChat(prompt, modelId) {
     isTyping = true;
     ensureChatVisible();
 
@@ -100,7 +146,7 @@
       fullText += token;
       bubble.innerHTML = escapeHtml(fullText) + '<span class="stream-cursor">▋</span>';
       chatArea.scrollTop = chatArea.scrollHeight;
-    }).then(function() {
+    }, modelId).then(function() {
       bubble.innerHTML = escapeHtml(fullText);
       isTyping = false;
     }).catch(function(e) {
@@ -131,4 +177,7 @@
     inputBox.value = '';
     inputBox.style.height = 'auto';
   });
+
+  // 初始构建一次（此时通常无运行模型，显示置灰提示）
+  refreshModelSelect();
 })();
