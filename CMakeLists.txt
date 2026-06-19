@@ -78,6 +78,8 @@ add_executable(${PROJECT_NAME} WIN32
     src/main.cpp
     src/WebViewWrapper.cpp
     src/DownloadService.cpp
+    src/ChatService.cpp
+    src/Subprocess.cpp
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -110,7 +112,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     advapi32
 )
 
-# 复制前端文件 (demo.html / demo.css / demo.js) 到输出目录（与 exe 同目录）
+# 复制前端文件到输出目录（与 exe 同目录）
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/src/demo.html"
@@ -119,12 +121,24 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         "${CMAKE_SOURCE_DIR}/src/demo.css"
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/demo.css
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/src/demo.js"
-        $<TARGET_FILE_DIR:${PROJECT_NAME}>/demo.js
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/src/DownloadService.js"
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/DownloadService.js
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/src/ChatService.js"
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/ChatService.js
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/src/js"
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/js
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/src/models.json"
         $<TARGET_FILE_DIR:${PROJECT_NAME}>/models.json
 )
+
+# 复制 llama 二进制目录到输出目录（llama-server.exe 等）
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/llama-b9703-bin-win-vulkan-x64")
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/third_party/llama-b9703-bin-win-vulkan-x64"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>/llama-bin"
+    )
+endif()

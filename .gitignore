@@ -5,6 +5,8 @@ build_nmake/
 third_party/webview_src/
 third_party/webview.h
 third_party/nlohmann.json.3.12.0/
+third_party/llama-b9703-bin-win-vulkan-x64/
+third_party/llama.cpp/
 nuget.exe
 *.exe
 *.dll

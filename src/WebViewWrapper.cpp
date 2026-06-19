@@ -856,8 +856,7 @@ bool WebViewWrapper::setup_js_bridge() {
                 }
 
                 if (!obj) {
-                    self->reject(id, BindingException(ErrorCode::OBJECT_NOT_FOUND,
-                        "Object not found: " + obj_name).to_json().dump());
+                    self->reject(id, "Object not found: " + obj_name);
                 } else {
                     self->dispatch_task([obj, method, id, args, self]() {
                         obj->invoke_async(method, id, args, self);
@@ -955,11 +954,11 @@ bool WebViewWrapper::setup_js_bridge() {
                 for (auto& n : obj->property_names()) prop_names.push_back(n);
 
                 json result = {
-                    {{"id", instance_id}},
-                    {{"type", type_name}},
-                    {{"sync", std::move(sync_names)}},
-                    {{"async", std::move(async_names)}},
-                    {{"props", std::move(prop_names)}}
+                    {"id", instance_id},
+                    {"type", type_name},
+                    {"sync", std::move(sync_names)},
+                    {"async", std::move(async_names)},
+                    {"props", std::move(prop_names)}
                 };
                 webview_return(self->m_webview, seq, 0, result.dump().c_str());
             } catch (const std::exception& e) {

@@ -15,7 +15,7 @@
 
 DownloadService::DownloadService(const std::string& base_dir)
     : m_baseDir(base_dir) {
-    curl_global_init(CURL_GLOBAL_ALL);
+    // curl 全局初始化由 main/WinMain 统一调用一次，此处不再重复。
 
     bind_async("startDownload", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
         startDownload(id, args, wv);
@@ -65,7 +65,7 @@ DownloadService::~DownloadService() {
             task->thread.join();
         }
     }
-    curl_global_cleanup();
+    // curl_global_cleanup 由 main/WinMain 统一调用。
 }
 
 void DownloadService::on_created() {
@@ -443,7 +443,7 @@ void DownloadService::downloadWorker(std::shared_ptr<DownloadTask> task) {
                   << " (" << task->downloaded.load() << " bytes)" << std::endl;
     } else if (task->cancelled.load()) {
         std::cout << "[DownloadService] cancelled/failed: " << task->modelId
-                  << " curl=" << res << " http=" << httpCode << std::endl;
+                  << " curl=" << res << " (" << curl_easy_strerror(res) << ") http=" << httpCode << std::endl;
     }
 
     task->threadRunning.store(false);

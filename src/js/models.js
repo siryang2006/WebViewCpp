@@ -1,0 +1,424 @@
+/* ================================================================
+   models.js — 模型列表 / 下载 / 详情页
+   数据存于 AppState.models；下载经 window.downloadService；
+   配置/删除经 window.__cpp__.config。停止模型发 'model:stopped' 事件。
+   行内 onclick 调用的函数挂在 window 上（startDownload 等）。
+   ================================================================ */
+(function() {
+  var modelList = $('modelList');
+  var modelSearchInput = $('modelSearchInput');
+  var expandFilterBtn = $('expandFilterBtn');
+  var filterPanel = $('filterPanel');
+  var dl = window.downloadService;
+
+  // 筛选状态
+  var filterState = { param: 'all', type: 'all' };
+
+  function typeLabelOf(type) {
+    return type.includes('Gemma') ? 'Gemma'
+         : type.includes('Qwen') ? 'Qwen'
+         : type.includes('Llama') ? 'Llama' : type;
+  }
+
+  function renderModels() {
+    var models = window.AppState.models;
+    var q = modelSearchInput.value.trim().toLowerCase();
+    var filtered = models.filter(function(m) {
+      if (q && !m.name.toLowerCase().includes(q) && !m.desc.toLowerCase().includes(q)) return false;
+      if (filterState.param === 'small' && m.param > 10) return false;
+      if (filterState.param === 'medium' && (m.param <= 10 || m.param > 30)) return false;
+      if (filterState.param === 'large' && m.param <= 30) return false;
+      if (filterState.type === 'gemma' && !m.type.includes('Gemma')) return false;
+      if (filterState.type === 'qwen' && !m.type.includes('Qwen')) return false;
+      if (filterState.type === 'llama' && !m.type.includes('Llama')) return false;
+      if (filterState.type === 'other' && ['Gemma', 'Qwen', 'Llama'].some(function(t) { return m.type.includes(t); })) return false;
+      return true;
+    });
+
+    if (!filtered.length) {
+      modelList.innerHTML = '<div style="text-align:center;padding:48px;color:var(--text-muted);font-size:13px;">🔍 没有找到符合条件的模型</div>';
+      return;
+    }
+
+    modelList.innerHTML = filtered.map(function(m) {
+      var isRunning = m.status === 'running';
+      var isDownloaded = m.status === 'downloaded';
+      var isDownloading = m.status === 'downloading';
+      // 没有status字段或status为'available'表示可以下载
+      var isAvailable = !m.status || m.status === 'available';
+      var typeLabel = typeLabelOf(m.type);
+      // 转义用户可控字段（名称/描述/大小/类型来自「添加模型」表单，可能含 < ' " 等）。
+      var name = escapeHtml(m.name);
+      var desc = escapeHtml(m.desc);
+      var size = escapeHtml(m.size);
+      var tl = escapeHtml(typeLabel);
+      var idA = escapeHtml(m.id);                       // 用于 HTML 属性（id="..."）
+      var idJs = escapeHtml(m.id).replace(/'/g, "\\'");  // 用于 onclick 单引号字符串
+      return '<div class="model-row ' + (isRunning ? 'selected' : '') + '">' +
+        '<div class="model-check ' + (isRunning ? 'on' : '') + '" id="ck-' + idA + '">' + (isRunning ? '✓' : '') + '</div>' +
+        '<div class="model-row-icon ' + (isRunning ? 'running' : '') + '">' + (isRunning ? '🚀' : isDownloaded ? '✅' : '📦') + '</div>' +
+        '<div class="model-row-info">' +
+          '<div class="model-row-name">' + name + '</div>' +
+          '<div class="model-row-meta">' + desc + '</div>' +
+          '<div class="model-row-tags">' +
+            '<span class="model-row-tag gb">' + size + '</span>' +
+            '<span class="model-row-tag type">' + tl + '</span>' +
+          '</div>' +
+        '</div>' +
+        (isRunning ? '<div class="model-row-status"><span class="status-dot-sm"></span>运行中</div>' : '') +
+        '<div class="model-row-actions">' +
+          (isRunning ? '<button class="btn btn-red" onclick="stopModel(\'' + idJs + '\')">停止</button>' : '') +
+          (isDownloaded ? '<button class="btn btn-green" onclick="showConfig(\'' + idJs + '\')">▶ 立即启动</button>' +
+            '<button class="btn btn-ghost" onclick="deleteModel(\'' + idJs + '\')" title="删除">🗑</button>' : '') +
+          (isDownloading ?
+            '<div class="model-dl-info">' +
+              '<div class="model-dl-bar"><div class="model-dl-fill" id="dlbar-' + idA + '" style="width:' + m.progress + '%"></div></div>' +
+              '<div class="model-dl-speed">' + formatSpeed(m.speed || 0) + '</div>' +
+            '</div>' +
+            '<button class="btn btn-ghost" onclick="pauseDownload(\'' + idJs + '\')" title="暂停">⏸</button>' +
+            '<button class="btn btn-ghost" onclick="cancelDownload(\'' + idJs + '\')" title="取消">✕</button>' : '') +
+          (m.status === 'paused' ?
+            '<div class="model-dl-info">' +
+              '<div class="model-dl-bar"><div class="model-dl-fill" id="dlbar-' + idA + '" style="width:' + m.progress + '%"></div></div>' +
+              '<div class="model-dl-speed">已暂停</div>' +
+            '</div>' +
+            '<button class="btn btn-ghost" onclick="resumeDownload(\'' + idJs + '\')" title="继续">▶</button>' +
+            '<button class="btn btn-ghost" onclick="cancelDownload(\'' + idJs + '\')" title="取消">✕</button>' : '') +
+          (isAvailable ? '<button class="btn btn-blue" onclick="startDownload(\'' + idJs + '\')">⬇ 下载模型</button>' : '') +
+          '<button class="btn btn-ghost" onclick="showDetail(\'' + idJs + '\')" title="详情">⋯</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function findModel(id) {
+    return window.AppState.models.find(function(x) { return x.id === id; });
+  }
+
+  /* ---- 下载操作 ---- */
+  function startDownload(id) {
+    var m = findModel(id);
+    if (!m || !m.download_url) return;
+
+    m.status = 'downloading';
+    m.progress = 0;
+    m.downloaded = 0;
+    m.speed = 0;
+    renderModels();
+
+    dl.startDownload({
+      url: m.download_url,
+      savePath: m.gguf_path || 'downloads/' + id + '/' + m.download_url.split('/').pop(),
+      modelId: id,
+      totalSize: m.size_bytes || 0
+    }, function(data) {
+      m.progress = data.percentage || 0;
+      m.downloaded = data.downloaded || 0;
+      m.total = data.total || 0;
+      m.speed = data.speed || 0;
+
+      if (data.status === 'completed') {
+        m.status = 'downloaded';
+        m.progress = 100;
+      } else if ((data.status === 'cancelled' || data.status === 'error') && !m._pausing) {
+        m.status = 'available';
+        m.progress = 0;
+        m.downloaded = 0;
+        m.speed = 0;
+      }
+      renderModels();
+    });
+  }
+
+  function pauseDownload(id) {
+    var m = findModel(id);
+    if (!m) return;
+    m.status = 'paused';
+    m._pausing = true;
+    renderModels();
+    dl.pauseDownload(id).then(function(r) {
+      m._pausing = false;
+      if (r && r.ok === false) { m.status = 'downloading'; renderModels(); }
+    }).catch(function() {
+      m._pausing = false;
+      m.status = 'downloading';
+      renderModels();
+    });
+  }
+
+  function resumeDownload(id) {
+    var m = findModel(id);
+    if (!m) return;
+    dl.resumeDownload(id).then(function(r) {
+      m.status = (r && r.ok === false) ? 'paused' : 'downloading';
+      renderModels();
+    }).catch(function() {
+      m.status = 'paused';
+      renderModels();
+    });
+    m.status = 'downloading';
+    renderModels();
+  }
+
+  function cancelDownload(id) {
+    dl.cancelDownload(id);
+    var m = findModel(id);
+    if (m) {
+      m.status = 'available';
+      m.progress = 0;
+      m.downloaded = 0;
+      m.speed = 0;
+    }
+    renderModels();
+  }
+
+  /* ---- 停止运行中的模型 ---- */
+  function stopModel(id) {
+    var m = findModel(id);
+    if (m) m.status = 'downloaded';
+    renderModels();
+    AppBus.emit('model:stopped', { id: id });
+    if (window.chatService) {
+      window.chatService.stopModel().catch(function() {});
+    }
+  }
+
+  /* ---- 添加模型 ---- */
+  function showAddModel() {
+    $('addModelId').value = '';
+    $('addModelName').value = '';
+    $('addModelUrl').value = '';
+    $('addModelDesc').value = '';
+    $('addModelSize').value = '';
+    $('addModelSizeBytes').value = '';
+    $('addModelParam').value = '';
+    $('addModelType').value = 'Other';
+    $('addModelCtx').value = '32K';
+    $('addModelOverlay').classList.add('show');
+  }
+
+  $('addModelBtn').addEventListener('click', showAddModel);
+  $('addModelCancel').addEventListener('click', function() {
+    $('addModelOverlay').classList.remove('show');
+  });
+  $('addModelConfirm').addEventListener('click', function() {
+    var id = $('addModelId').value.trim();
+    var name = $('addModelName').value.trim();
+    var url = $('addModelUrl').value.trim();
+    if (!id || !url) { alert('模型 ID 和下载 URL 为必填项'); return; }
+    var model = {
+      id: id,
+      name: name || id,
+      download_url: url,
+      desc: $('addModelDesc').value.trim() || '',
+      size: $('addModelSize').value.trim() || 'Unknown',
+      size_bytes: parseInt($('addModelSizeBytes').value) || 0,
+      param: parseFloat($('addModelParam').value) || 0,
+      type: $('addModelType').value,
+      ctx: $('addModelCtx').value
+    };
+    window.__cpp__.config.addModel(model).then(function(data) {
+      $('addModelOverlay').classList.remove('show');
+      window.AppState.models = (data.models || []).map(function(m) {
+        m.progress = (m.status === 'downloaded' || m.status === 'running') ? 100 : 0;
+        return m;
+      });
+      renderModels();
+    }).catch(function(e) {
+      alert('添加模型失败: ' + e);
+    });
+  });
+
+  /* ---- 删除模型（确认弹窗）---- */
+  function confirmDialog(msg, onOk) {
+    $('confirmMessage').textContent = msg;
+    $('confirmOverlay').classList.add('show');
+    var okHandler = function() {
+      $('confirmOverlay').classList.remove('show');
+      $('confirmOk').removeEventListener('click', okHandler);
+      $('confirmCancel').removeEventListener('click', cancelHandler);
+      onOk();
+    };
+    var cancelHandler = function() {
+      $('confirmOverlay').classList.remove('show');
+      $('confirmOk').removeEventListener('click', okHandler);
+      $('confirmCancel').removeEventListener('click', cancelHandler);
+    };
+    $('confirmOk').addEventListener('click', okHandler);
+    $('confirmCancel').addEventListener('click', cancelHandler);
+  }
+
+  function deleteModel(id) {
+    var m = findModel(id);
+    if (!m) return;
+    dl.cancelDownload(id);
+    confirmDialog('确定要删除「' + m.name + '」的本地文件吗？', function() {
+      if (m.gguf_path) {
+        window.__cpp__.config.deleteFile(m.gguf_path).then(function() {
+          m.status = 'available';
+          m.progress = 0;
+          m.downloaded = 0;
+          m.speed = 0;
+          renderModels();
+        }).catch(function(e) {
+          alert('删除本地文件失败: ' + e);
+        });
+      }
+    });
+  }
+
+  /* ---- 模型详情页 ---- */
+  var currentDetailId = null;
+
+  function showDetail(id) {
+    var m = findModel(id);
+    if (!m) return;
+    currentDetailId = id;
+
+    var isRunning = m.status === 'running';
+    var isDownloaded = m.status === 'downloaded';
+    var isDownloading = m.status === 'downloading';
+    var typeLabel = typeLabelOf(m.type);
+
+    $('detailTitle').textContent = m.name;
+    $('detailName').textContent = m.name;
+    $('detailDesc').textContent = m.desc;
+    $('detailParam').textContent = m.param + 'B';
+    $('detailSize').textContent = m.size;
+    $('detailType').textContent = m.type;
+    $('detailCtx').textContent = m.ctx || '8K';
+
+    var heroIcon = $('detailHeroIcon');
+    heroIcon.textContent = isRunning ? '🚀' : isDownloaded ? '✅' : '📦';
+    heroIcon.className = 'detail-hero-icon' + (isRunning ? ' running' : '');
+
+    $('detailTags').innerHTML =
+      '<span class="detail-tag gb">' + escapeHtml(m.size) + '</span>' +
+      '<span class="detail-tag type">' + escapeHtml(typeLabel) + '</span>' +
+      '<span class="detail-tag ctx">上下文 ' + escapeHtml(m.ctx || '8K') + '</span>' +
+      '<span class="detail-tag">' + escapeHtml(String(m.param)) + 'B 参数</span>';
+
+    var statusRow = $('detailStatusRow');
+    if (isRunning) {
+      statusRow.className = 'detail-status-row running';
+      statusRow.innerHTML = '<span class="status-dot-sm" style="width:8px;height:8px;"></span> <span>运行中</span>';
+    } else if (isDownloaded) {
+      statusRow.className = 'detail-status-row stopped';
+      statusRow.innerHTML = '<span>已下载 · 未运行</span>';
+    } else {
+      statusRow.className = 'detail-status-row stopped';
+      statusRow.innerHTML = '<span>未下载</span>';
+    }
+
+    $('detailPath').textContent = m.gguf_path || ('models/' + m.id);
+
+    // 上下文滑块（显示实际 token 数）
+    var ctxSection = $('detailCtxSection');
+    var ctxSlider = $('detailCtxSlider');
+    var ctxVal = $('detailCtxVal');
+    if (isDownloaded || isRunning) {
+      ctxSection.style.display = '';
+      var ctxIdx = CTX_STEPS.indexOf(parseCtxToTokens(m.ctx));
+      if (ctxIdx < 0) ctxIdx = 2;
+      ctxSlider.min = 0;
+      ctxSlider.max = CTX_STEPS.length - 1;
+      ctxSlider.value = ctxIdx;
+      ctxVal.textContent = CTX_STEPS[ctxIdx];
+    } else {
+      ctxSection.style.display = 'none';
+    }
+
+    // 底部操作按钮
+    var actionBtn = $('detailActionBtn');
+    if (isRunning) {
+      actionBtn.className = 'btn btn-red';
+      actionBtn.textContent = '■ 停止';
+      actionBtn.onclick = function() { stopModel(id); closeDetail(); };
+    } else if (isDownloaded) {
+      actionBtn.className = 'btn btn-green';
+      actionBtn.textContent = '▶ 启动';
+      actionBtn.onclick = function() { closeDetail(); window.showConfig(id); };
+    } else if (isDownloading) {
+      actionBtn.className = 'btn btn-yellow';
+      actionBtn.textContent = '⏸ 暂停';
+      actionBtn.onclick = function() { pauseDownload(id); closeDetail(); };
+    } else if (m.status === 'paused') {
+      actionBtn.className = 'btn btn-blue';
+      actionBtn.textContent = '▶ 继续';
+      actionBtn.onclick = function() { resumeDownload(id); closeDetail(); };
+    } else {
+      actionBtn.className = 'btn btn-blue';
+      actionBtn.textContent = '⬇ 下载';
+      actionBtn.onclick = function() { startDownload(id); closeDetail(); };
+    }
+
+    $('detailPage').classList.add('open');
+  }
+
+  function closeDetail() {
+    $('detailPage').classList.remove('open');
+    currentDetailId = null;
+  }
+
+  $('detailBackBtn').addEventListener('click', closeDetail);
+  $('detailCloseBtn2').addEventListener('click', closeDetail);
+  $('detailCtxSlider').addEventListener('input', function(e) {
+    $('detailCtxVal').textContent = CTX_STEPS[parseInt(e.target.value)];
+  });
+
+  /* ---- 筛选 ---- */
+  expandFilterBtn.addEventListener('click', function() {
+    var open = filterPanel.classList.toggle('open');
+    expandFilterBtn.querySelector('span').textContent = open ? '‹' : '›';
+    expandFilterBtn.style.borderColor = open ? 'var(--accent)' : '';
+  });
+
+  document.querySelectorAll('.filter-check[data-param]').forEach(function(el) {
+    el.addEventListener('click', function() {
+      document.querySelectorAll('.filter-check[data-param]').forEach(function(c) { c.classList.remove('checked'); });
+      el.classList.add('checked');
+      filterState.param = el.dataset.param;
+      renderModels();
+    });
+  });
+  document.querySelectorAll('.filter-check[data-type]').forEach(function(el) {
+    el.addEventListener('click', function() {
+      document.querySelectorAll('.filter-check[data-type]').forEach(function(c) { c.classList.remove('checked'); });
+      el.classList.add('checked');
+      filterState.type = el.dataset.type;
+      renderModels();
+    });
+  });
+
+  modelSearchInput.addEventListener('input', renderModels);
+
+  /* ---- 从 models.json 加载（经 C++ config bridge）---- */
+  function loadModels() {
+    window.__cpp__.config.read('models.json')
+      .then(function(data) {
+        window.AppState.models = (data.models || []).map(function(m) {
+          m.progress = (m.status === 'downloaded' || m.status === 'running') ? 100 : 0;
+          return m;
+        });
+        renderModels();
+      })
+      .catch(function(e) {
+        modelList.innerHTML = '<div style="text-align:center;padding:48px;color:var(--red);font-size:13px;">⚠ 模型配置加载失败：' + e + '</div>';
+      });
+  }
+
+  // 配置弹窗启动成功后需要重渲染列表（config.js 发出）
+  AppBus.on('models:changed', renderModels);
+
+  // 行内 onclick 依赖的全局函数
+  window.startDownload = startDownload;
+  window.pauseDownload = pauseDownload;
+  window.resumeDownload = resumeDownload;
+  window.cancelDownload = cancelDownload;
+  window.stopModel = stopModel;
+  window.deleteModel = deleteModel;
+  window.showDetail = showDetail;
+  window.renderModels = renderModels;
+
+  loadModels();
+})();

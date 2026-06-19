@@ -378,6 +378,50 @@ html, body {
   flex-direction: column;
   gap: 6px;
 }
+.model-running {
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.model-running-name {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.model-api-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.model-api-url {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: monospace;
+  cursor: pointer;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-api-url:hover {
+  color: var(--accent);
+}
+.model-api-copy {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  opacity: 0.7;
+  transition: opacity 0.2s;
+}
+.model-api-copy:hover {
+  opacity: 1;
+}
 .metric-row {
   display: flex;
   align-items: center;
@@ -667,6 +711,15 @@ html, body {
   background: var(--accent);
   color: white;
   border-color: var(--accent);
+}
+.stream-cursor {
+  display: inline-block;
+  animation: blink 1s step-end infinite;
+  color: var(--accent);
+  font-weight: bold;
+}
+@keyframes blink {
+  50% { opacity: 0; }
 }
 .msg-time {
   font-size: 11px;
@@ -1150,6 +1203,18 @@ html, body {
   transition: transform 0.2s;
 }
 .config-toggle.on::after { transform: translateX(18px); }
+.config-cmd-preview {
+  margin-top: 16px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
+  line-height: 1.5;
+}
 .config-actions {
   display: flex;
   gap: 8px;

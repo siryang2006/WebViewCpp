@@ -113,25 +113,32 @@
       <div class="service-header">
         <span class="service-title">🔌 本地服务</span>
         <div class="service-status">
-          <span class="status-dot"></span>
-          <span>运行中</span>
+          <span class="status-dot stopped" id="serviceStatusDot"></span>
+          <span id="serviceStatusText">已停止</span>
         </div>
       </div>
-      <div class="service-metrics">
+      <div class="model-running" id="modelRunningInfo" style="display:none;">
+        <div class="model-running-name" id="modelRunningName">-</div>
+        <div class="model-api-row" id="modelApiRow">
+          <span class="model-api-url" id="modelApiUrl" title="点击复制 API 地址">http://127.0.0.1:8080</span>
+          <button class="model-api-copy" id="modelApiCopy" title="复制 API 地址">📋</button>
+        </div>
+      </div>
+      <div class="service-metrics" id="serviceMetrics" style="display:none;">
         <div class="metric-row">
           <span class="metric-label">CPU</span>
-          <div class="metric-bar-wrap"><div class="metric-bar-fill" id="cpuBar" style="width:34%"></div></div>
-          <span class="metric-value" id="cpuVal">34%</span>
+          <div class="metric-bar-wrap"><div class="metric-bar-fill" id="cpuBar" style="width:0%"></div></div>
+          <span class="metric-value" id="cpuVal">0%</span>
         </div>
         <div class="metric-row">
           <span class="metric-label">内存</span>
-          <div class="metric-bar-wrap"><div class="metric-bar-fill" id="memBar" style="width:52%"></div></div>
-          <span class="metric-value" id="memVal">8.2 GB</span>
+          <div class="metric-bar-wrap"><div class="metric-bar-fill" id="memBar" style="width:0%"></div></div>
+          <span class="metric-value" id="memVal">0 MB</span>
         </div>
         <div class="metric-row">
-          <span class="metric-label">显卡</span>
-          <div class="metric-bar-wrap"><div class="metric-bar-fill" id="gpuBar" style="width:18%"></div></div>
-          <span class="metric-value" id="gpuVal">18%</span>
+          <span class="metric-label">显存</span>
+          <div class="metric-bar-wrap"><div class="metric-bar-fill" id="gpuBar" style="width:0%"></div></div>
+          <span class="metric-value" id="gpuVal">0 MB</span>
         </div>
       </div>
     </div>
@@ -480,13 +487,43 @@
 
     <div class="config-row">
       <div class="config-label-group">
-        <div class="config-label">上下文大小</div>
-        <div class="config-hint">拖拽至中间或直接拉满（越大占用内存越多）</div>
+        <div class="config-label">上下文长度 (-c)</div>
+        <div class="config-hint">模型可处理的最大 token 数（越大占用内存越多）</div>
       </div>
       <div class="config-slider-wrap">
-        <input type="range" class="config-slider" id="configCtxSlider" min="10" max="100" value="50">
-        <span class="config-slider-value" id="configCtx">50%</span>
+        <input type="range" class="config-slider" id="configCtxSlider" min="0" max="6" value="3">
+        <span class="config-slider-value" id="configCtx">8192</span>
       </div>
+    </div>
+
+    <div class="config-row">
+      <div class="config-label-group">
+        <div class="config-label">GPU 层数 (-ngl)</div>
+        <div class="config-hint">卸载到 GPU 的层数，-1 为全部，0 为纯 CPU</div>
+      </div>
+      <div class="config-slider-wrap">
+        <input type="range" class="config-slider" id="configNglSlider" min="-1" max="99" value="-1">
+        <span class="config-slider-value" id="configNgl">全部</span>
+      </div>
+    </div>
+
+    <div class="config-row">
+      <div class="config-label-group">
+        <div class="config-label">线程数 (-t)</div>
+        <div class="config-hint">CPU 推理线程数</div>
+      </div>
+      <div class="config-slider-wrap">
+        <input type="range" class="config-slider" id="configThreadsSlider" min="1" max="32" value="4">
+        <span class="config-slider-value" id="configThreads">4</span>
+      </div>
+    </div>
+
+    <div class="config-row">
+      <div class="config-label-group">
+        <div class="config-label">Flash Attention (-fa)</div>
+        <div class="config-hint">启用 Flash Attention 加速（需 GPU 支持）</div>
+      </div>
+      <button class="config-toggle on" id="configFlashAttn"></button>
     </div>
 
     <div class="config-row">
@@ -497,6 +534,8 @@
       <button class="config-toggle" id="configThinking"></button>
     </div>
 
+    <div class="config-cmd-preview" id="configCmdPreview"></div>
+
     <div class="config-actions">
       <button class="btn btn-secondary" id="configCancel">取消</button>
       <button class="btn btn-primary" id="configConfirm">▶ 启动</button>
@@ -504,7 +543,15 @@
   </div>
 </div>
 
+<!-- C++ 桥接层（与 C++ 类一一对应） -->
 <script src="DownloadService.js"></script>
-<script src="demo.js"></script>
+<script src="ChatService.js"></script>
+<!-- 前端模块（按依赖顺序：core 最先，各功能模块互不直接依赖） -->
+<script src="js/core.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/chat.js"></script>
+<script src="js/models.js"></script>
+<script src="js/config.js"></script>
+<script src="js/service-panel.js"></script>
 </body>
 </html>

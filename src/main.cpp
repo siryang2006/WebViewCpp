@@ -1,5 +1,11 @@
 #include "WebViewWrapper.h"
 #include "DownloadService.h"
+#include "ChatService.h"
+#include "services/MathService.h"
+#include "services/FileService.h"
+#include "services/ConfigService.h"
+#include "services/WorkerService.h"
+#include <curl/curl.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -14,302 +20,6 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #endif
-
-// ============================================================
-// 数学服务示例
-// ============================================================
-class MathService : public CppObject {
-public:
-    MathService() {
-        bind_sync("add", [](const json& args) -> json {
-            return args[0].get<int>() + args[1].get<int>();
-        });
-
-        bind_sync("multiply", [](const json& args) -> json {
-            return args[0].get<int>() * args[1].get<int>();
-        });
-
-        bind_async("slow_add", [](const std::string& id, const json& args, WebViewWrapper* wv) {
-            int a = args[0].get<int>();
-            int b = args[1].get<int>();
-            wv->dispatch_task([id, a, b, wv]() {
-                std::this_thread::sleep_for(std::chrono::seconds(2));
-                if (!wv->is_ready()) {
-                    wv->reject(id, "WebView terminated");
-                    return;
-                }
-                wv->resolve(id, a + b);
-            });
-        });
-
-        bind_async("fetch_data", [](const std::string& id, const json& args, WebViewWrapper* wv) {
-            std::string query = args[0].get<std::string>();
-            wv->dispatch_task([id, query, wv]() {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-                if (!wv->is_ready()) {
-                    wv->reject(id, "WebView terminated");
-                    return;
-                }
-                wv->resolve(id, {{"query", query}, {"status", "ok"}, {"count", 42}});
-            });
-        });
-
-        bind_property("version", []() -> std::string { return "1.0.0"; });
-        bind_property("pi", []() -> double { return 3.14159; });
-
-        // 反向调用：JS 调用此方法后，C++ 主动回调已注册的 JS 回调（onCppEvent）。
-        bind_async("fire_event", [](const std::string& id, const json& args, WebViewWrapper* wv) {
-            std::string event = args.empty() ? "manual" : args[0].get<std::string>();
-            wv->dispatch_task([id, event, wv]() {
-                if (!wv->is_ready()) {
-                    wv->reject(id, "WebView terminated");
-                    return;
-                }
-                wv->call_registered_js("onCppEvent", {{"event", event}, {"source", "fire_event"}});
-                wv->resolve(id, {{"fired", true}, {"event", event}});
-            });
-        });
-    }
-
-    std::string object_name() const override { return "math"; }
-
-    void on_created() override { std::cout << "[MathService] created\n"; }
-    void on_destroyed() override { std::cout << "[MathService] destroyed\n"; }
-};
-
-// ============================================================
-// 文件服务示例
-// ============================================================
-class FileService : public CppObject {
-public:
-    FileService() {
-        bind_async("read", [](const std::string& id, const json& args, WebViewWrapper* wv) {
-            std::string path = args[0].get<std::string>();
-            wv->dispatch_task([id, path, wv]() {
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                if (!wv->is_ready()) {
-                    wv->reject(id, "WebView terminated");
-                    return;
-                }
-                wv->resolve(id, {{"content", "File content of: " + path}, {"size", 1024}});
-            });
-        });
-
-        bind_async("write", [](const std::string& id, const json& args, WebViewWrapper* wv) {
-            std::string path = args[0].get<std::string>();
-            std::string content = args[1].get<std::string>();
-            wv->dispatch_task([id, path, content, wv]() {
-                std::this_thread::sleep_for(std::chrono::milliseconds(300));
-                if (!wv->is_ready()) {
-                    wv->reject(id, "WebView terminated");
-                    return;
-                }
-                wv->resolve(id, {{"success", true}, {"bytes", content.size()}});
-            });
-        });
-    }
-
-    std::string object_name() const override { return "file"; }
-};
-
-// ============================================================
-// 配置服务：从磁盘读取 JSON 配置（演示 C++ 读文件能力）
-// 前端通过 file:// 协议无法 fetch 本地文件，改由 C++ 读取返回
-// ============================================================
-class ConfigService : public CppObject {
-public:
-    ConfigService(const std::string& base_dir) : m_base_dir(base_dir) {
-        bind_async("deleteFile", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
-            std::string path = args.is_array() && args.size() > 0 ? args[0].get<std::string>() : "";
-            std::string dir = m_base_dir;
-            wv->dispatch_task([id, path, dir, wv]() {
-                if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
-                if (path.empty()) { wv->reject(id, "path is required"); return; }
-                // path comes from JS and is joined onto the app dir; reject '..' so
-                // it can't escape the directory and delete arbitrary files.
-                if (path.find("..") != std::string::npos) { wv->reject(id, "Invalid path"); return; }
-                std::string fullPath = dir + "/" + path;
-                int ret = remove(fullPath.c_str());
-                if (ret == 0) {
-                    wv->resolve(id, {{"ok", true}, {"path", path}});
-                } else {
-                    wv->reject(id, "Failed to delete: " + path);
-                }
-            });
-        });
-
-        bind_async("addModel", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
-            json model = args.is_array() && args.size() > 0 ? args[0] : args;
-            std::string dir = m_base_dir;
-            wv->dispatch_task([id, model, dir, wv]() mutable {
-                if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
-                std::string configPath = dir + "/models.json";
-                std::ifstream f(configPath);
-                if (!f) { wv->reject(id, "models.json not found"); return; }
-                std::stringstream ss;
-                ss << f.rdbuf();
-                f.close();
-                try {
-                    json data = json::parse(ss.str());
-                    if (!data.contains("models") || !data["models"].is_array()) {
-                        data["models"] = json::array();
-                    }
-                    // Check for duplicate id
-                    std::string newId = model.value("id", "");
-                    for (auto& m : data["models"]) {
-                        if (m.value("id", "") == newId) {
-                            wv->reject(id, "Model id already exists: " + newId);
-                            return;
-                        }
-                    }
-                    // Set defaults
-                    if (!model.contains("status")) model["status"] = "available";
-                    if (!model.contains("size")) model["size"] = "Unknown";
-                    if (!model.contains("size_bytes")) model["size_bytes"] = 0;
-                    if (!model.contains("param")) model["param"] = 0;
-                    if (!model.contains("type")) model["type"] = "Other";
-                    if (!model.contains("desc")) model["desc"] = "";
-                    if (!model.contains("ctx")) model["ctx"] = "32K";
-                    if (!model.contains("gguf_path")) {
-                        std::string filename = model.value("download_url", "");
-                        auto pos = filename.find_last_of("/");
-                        if (pos != std::string::npos) filename = filename.substr(pos + 1);
-                        model["gguf_path"] = "downloads/" + newId + "/" + filename;
-                    }
-                    data["models"].push_back(model);
-                    std::ofstream of(configPath);
-                    of << data.dump(2);
-                    of.close();
-                    wv->resolve(id, data);
-                } catch (const std::exception& e) {
-                    wv->reject(id, std::string("failed: ") + e.what());
-                }
-            });
-        });
-
-        bind_async("deleteModel", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
-            std::string modelId = args.is_array() && args.size() > 0 ? args[0].get<std::string>() : "";
-            std::string dir = m_base_dir;
-            wv->dispatch_task([id, modelId, dir, wv]() {
-                if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
-                std::string configPath = dir + "/models.json";
-                std::ifstream f(configPath);
-                if (!f) { wv->reject(id, "models.json not found"); return; }
-                std::stringstream ss;
-                ss << f.rdbuf();
-                f.close();
-                try {
-                    json data = json::parse(ss.str());
-                    if (!data.contains("models") || !data["models"].is_array()) {
-                        wv->reject(id, "No models array");
-                        return;
-                    }
-                    auto& models = data["models"];
-                    bool found = false;
-                    for (auto it = models.begin(); it != models.end(); ++it) {
-                        if (it->value("id", "") == modelId) {
-                            models.erase(it);
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) {
-                        wv->reject(id, "Model not found: " + modelId);
-                        return;
-                    }
-                    std::ofstream of(configPath);
-                    of << data.dump(2);
-                    of.close();
-                    wv->resolve(id, {{"ok", true}});
-                } catch (const std::exception& e) {
-                    wv->reject(id, std::string("failed: ") + e.what());
-                }
-            });
-        });
-
-        bind_async("read", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
-            std::string name = args.empty() ? "" : args[0].get<std::string>();
-            std::string dir = m_base_dir;
-            wv->dispatch_task([id, name, dir, this, wv]() {
-                if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
-                std::ifstream f(dir + "/" + name);
-                if (!f) { wv->reject(id, "config not found: " + name); return; }
-                std::stringstream ss;
-                ss << f.rdbuf();
-                try {
-                    json data = json::parse(ss.str());
-                    // 动态检测已下载的模型：检查 gguf_path 文件是否存在
-                    if (data.contains("models") && data["models"].is_array()) {
-                        for (auto& m : data["models"]) {
-                            if (m.contains("gguf_path") && m["gguf_path"].is_string()) {
-                                std::string savePath = dir + "/" + m["gguf_path"].get<std::string>();
-                                struct stat st;
-                                bool exists = (stat(savePath.c_str(), &st) == 0 && st.st_size > 0);
-                                m["status"] = exists ? "downloaded" : "available";
-                            } else {
-                                m["status"] = "available";
-                            }
-                        }
-                    }
-                    wv->resolve(id, data);
-                } catch (const std::exception& e) {
-                    wv->reject(id, std::string("invalid json: ") + e.what());
-                }
-            });
-        });
-    }
-    std::string object_name() const override { return "config"; }
-
-private:
-    std::string m_base_dir;
-};
-
-// ============================================================
-// Worker 示例（支持 JS new 创建）
-// ============================================================
-class WorkerService : public CppObject {
-public:
-    WorkerService(const std::string& name, int priority)
-        : m_name(name), m_priority(priority) {
-        bind_sync("getName", [this](const json&) -> json { return m_name; });
-        bind_sync("getPriority", [this](const json&) -> json { return m_priority; });
-        bind_sync("setPriority", [this](const json& args) -> json {
-            m_priority = args[0].get<int>();
-            return m_priority;
-        });
-        bind_async("doWork", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
-            std::string task = args[0].get<std::string>();
-            wv->dispatch_task([id, task, this, wv]() {
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                if (!wv->is_ready()) {
-                    wv->reject(id, "WebView terminated");
-                    return;
-                }
-                wv->resolve(id, {
-                    {"worker", m_name},
-                    {"task", task},
-                    {"priority", m_priority},
-                    {"status", "done"}
-                });
-            });
-        });
-    }
-
-    static std::shared_ptr<WorkerService> create(const json& args) {
-        std::string name = args.size() > 0 ? args[0].get<std::string>() : "default";
-        int priority = args.size() > 1 ? args[1].get<int>() : 0;
-        return std::make_shared<WorkerService>(name, priority);
-    }
-
-    std::string object_name() const override { return "worker_" + m_name; }
-
-    void on_created() override { std::cout << "[Worker] created: " << m_name << " (pri=" << m_priority << ")\n"; }
-    void on_destroyed() override { std::cout << "[Worker] destroyed: " << m_name << "\n"; }
-
-private:
-    std::string m_name;
-    int m_priority;
-};
 
 #ifdef _WIN32
 // ============================================================
@@ -771,6 +481,10 @@ static bool run_cpp_tests() {
 // ============================================================
 #ifdef _WIN32
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR lpCmdLine, int) {
+    // curl 全局初始化一次（DownloadService/ChatService 共用，libcurl 要求 call-once）。
+    curl_global_init(CURL_GLOBAL_ALL);
+    atexit(curl_global_cleanup);
+
     int cdp_port = 0;
     bool test_mode = false;
     if (lpCmdLine && *lpCmdLine) {
@@ -789,6 +503,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR lpCmdLine, int) {
     }
 #else
 int main(int argc, char* argv[]) {
+    // curl 全局初始化一次（DownloadService/ChatService 共用，libcurl 要求 call-once）。
+    curl_global_init(CURL_GLOBAL_ALL);
+    atexit(curl_global_cleanup);
+
     int cdp_port = 0;
     bool test_mode = false;
     for (int i = 1; i < argc; ++i) {
@@ -827,6 +545,10 @@ int main(int argc, char* argv[]) {
     auto downloadSvc = std::make_shared<DownloadService>(exe_dir);
     wv.bind_object(downloadSvc);
     downloadSvc->setWebView(&wv);
+
+    // ChatService: llama-server 子进程 + HTTP 流式推理
+    auto chatSvc = std::make_shared<ChatService>();
+    wv.bind_object(chatSvc);
 
     wv.bind_factory("Worker", WorkerService::create, WebViewWrapper::FactoryMode::Instance);
 
