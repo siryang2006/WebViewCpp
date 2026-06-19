@@ -349,22 +349,6 @@
 
     $('detailPath').textContent = m.gguf_path || ('models/' + m.id);
 
-    // 上下文滑块（显示实际 token 数）
-    var ctxSection = $('detailCtxSection');
-    var ctxSlider = $('detailCtxSlider');
-    var ctxVal = $('detailCtxVal');
-    if (isDownloaded || isRunning) {
-      ctxSection.style.display = '';
-      var ctxIdx = CTX_STEPS.indexOf(parseCtxToTokens(m.ctx));
-      if (ctxIdx < 0) ctxIdx = 2;
-      ctxSlider.min = 0;
-      ctxSlider.max = CTX_STEPS.length - 1;
-      ctxSlider.value = ctxIdx;
-      ctxVal.textContent = CTX_STEPS[ctxIdx];
-    } else {
-      ctxSection.style.display = 'none';
-    }
-
     // 底部操作按钮
     var actionBtn = $('detailActionBtn');
     if (isRunning) {
@@ -438,14 +422,6 @@
 
   $('detailBackBtn').addEventListener('click', closeDetail);
   $('detailCloseBtn2').addEventListener('click', closeDetail);
-  function onDetailCtxInput() {
-    var idx = parseInt(this.value);
-    if (idx >= 0 && idx < CTX_STEPS.length) {
-      $('detailCtxVal').textContent = CTX_STEPS[idx];
-    }
-  }
-  $('detailCtxSlider').addEventListener('input', onDetailCtxInput);
-  $('detailCtxSlider').addEventListener('change', onDetailCtxInput);
 
   /* ---- 筛选 ---- */
   expandFilterBtn.addEventListener('click', function() {
