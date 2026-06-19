@@ -36,29 +36,66 @@
     }
   }
 
-  // 资源监控（真实数据，每 2 秒轮询）
+  // 资源监控（真实数据，每 2 秒轮询）。
+  // 后端 getMetrics() 无参返回 { status, models: [{modelId, memoryMB, ...}, ...] }。
+  // 侧边栏展示首个运行模型的指标；同时把每个模型的指标写回 AppState.models[*].metrics，
+  // 供模型列表行渲染（models.js 读取）。兼容旧的单对象结构。
+  function applyMetricsToBars(d) {
+    var cpu = Math.min(d.cpuPercent || 0, 100);
+    var memMB = d.memoryMB || 0;
+    var gpuMB = d.gpuMemoryMB || 0;
+    var memPct = Math.min(memMB / (16 * 1024) * 100, 100);  // 假设系统 16GB
+
+    $('cpuBar').style.width = cpu + '%';
+    $('cpuBar').className = 'metric-bar-fill' + (cpu > 80 ? ' critical' : cpu > 60 ? ' high' : '');
+    $('cpuVal').textContent = cpu.toFixed(1) + '%';
+
+    $('memBar').style.width = memPct + '%';
+    $('memBar').className = 'metric-bar-fill' + (memPct > 85 ? ' critical' : memPct > 70 ? ' high' : '');
+    $('memVal').textContent = (memMB / 1024).toFixed(1) + ' GB';
+
+    $('gpuBar').style.width = Math.min(gpuMB / 8192 * 100, 100) + '%';
+    $('gpuBar').className = 'metric-bar-fill' + (gpuMB > 6000 ? ' critical' : gpuMB > 4000 ? ' high' : '');
+    $('gpuVal').textContent = (gpuMB / 1024).toFixed(1) + ' GB';
+  }
+
   function updateMetrics() {
     if (!window.chatService) return;
     window.chatService.getMetrics().then(function(r) {
-      if (r && r.ok && r.data && r.data.status === 'ok') {
-        var d = r.data;
-        var cpu = Math.min(d.cpuPercent || 0, 100);
-        var memMB = d.memoryMB || 0;
-        var gpuMB = d.gpuMemoryMB || 0;
-        var memPct = Math.min(memMB / (16 * 1024) * 100, 100);  // 假设系统 16GB
+      if (!r || !r.ok || !r.data) return;
+      var d = r.data;
 
-        $('cpuBar').style.width = cpu + '%';
-        $('cpuBar').className = 'metric-bar-fill' + (cpu > 80 ? ' critical' : cpu > 60 ? ' high' : '');
-        $('cpuVal').textContent = cpu.toFixed(1) + '%';
+      // 多模型结构：把指标分发给 AppState.models，并用首个模型刷新侧边栏。
+      if (Array.isArray(d.models)) {
+        var byId = {};
+        d.models.forEach(function(m) { byId[m.modelId] = m; });
 
-        $('memBar').style.width = memPct + '%';
-        $('memBar').className = 'metric-bar-fill' + (memPct > 85 ? ' critical' : memPct > 70 ? ' high' : '');
-        $('memVal').textContent = (memMB / 1024).toFixed(1) + ' GB';
+        var changed = false;
+        (window.AppState.models || []).forEach(function(m) {
+          var mt = byId[m.id];
+          if (mt && mt.status === 'ok') {
+            m.metrics = { memoryMB: mt.memoryMB, cpuPercent: mt.cpuPercent,
+                          gpuMemoryMB: mt.gpuMemoryMB, threads: mt.threads,
+                          handles: mt.handles, pid: mt.pid, port: mt.port };
+            changed = true;
+          } else if (m.metrics) {
+            delete m.metrics;
+            changed = true;
+          }
+        });
+        // 列表行指标刷新（仅当模型页可见时由 renderModels 输出）
+        if (changed && window.renderModels) window.renderModels();
+        // 详情页若打开了运行中的模型，刷新其资源面板
+        if (window.refreshDetailMetrics) window.refreshDetailMetrics(byId);
 
-        $('gpuBar').style.width = Math.min(gpuMB / 8192 * 100, 100) + '%';
-        $('gpuBar').className = 'metric-bar-fill' + (gpuMB > 6000 ? ' critical' : gpuMB > 4000 ? ' high' : '');
-        $('gpuVal').textContent = (gpuMB / 1024).toFixed(1) + ' GB';
+        if (d.models.length > 0) {
+          applyMetricsToBars(d.models[0]);
+        }
+        return;
       }
+
+      // 兼容旧的单对象结构
+      if (d.status === 'ok') applyMetricsToBars(d);
     }).catch(function() {});
   }
   setInterval(updateMetrics, 2000);

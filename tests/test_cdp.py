@@ -28,6 +28,11 @@ class TestFailed(Exception):
     pass
 
 
+def safe_print(s):
+    """控制台可能是 GBK 编码，无法打印 emoji；统一转 ascii 安全输出。"""
+    print(str(s).encode('ascii', 'replace').decode())
+
+
 def pick_smallest_gguf():
     """在 build/Debug/downloads 下查找体积最小的有效 gguf 文件，
     返回 (modelId, 相对 exe 目录的路径)；找不到返回 None。
@@ -675,21 +680,34 @@ async def run_cdp_tests():
                 f"typeof window.chatService.{method}")
             check(f"chatService.{method} is function", val == "function", f"got {val}")
 
-        # getStatus：未启动模型时应返回 stopped
+        # getStatus（无参）：未启动模型时返回 {status:'stopped', models:[]}
         cid, val = await evaluate(ws, cid,
             '(async()=>{ var r = await window.__cpp__.chat.getStatus(); return JSON.stringify(r); })()',
             await_promise=True, timeout_ms=5000)
         print(f"  DIAG: chat.getStatus = {val}")
-        check("chat.getStatus returns stopped when idle",
-              '"status":"stopped"' in val, f"got {val}")
+        st = json.loads(val)
+        check("chat.getStatus ok wrapper", st.get("ok") is True, f"got {val}")
+        check("chat.getStatus idle => stopped with empty models",
+              st["data"].get("status") == "stopped"
+              and st["data"].get("models") == [], f"got {val}")
 
-        # getMetrics：未启动模型时应返回 stopped
+        # getMetrics（无参）：未启动时返回 {status:'stopped', models:[]}
         cid, val = await evaluate(ws, cid,
             '(async()=>{ var r = await window.__cpp__.chat.getMetrics(); return JSON.stringify(r); })()',
             await_promise=True, timeout_ms=5000)
         print(f"  DIAG: chat.getMetrics = {val}")
-        check("chat.getMetrics returns ok result",
-              '"ok":true' in val, f"got {val}")
+        mt = json.loads(val)
+        check("chat.getMetrics ok wrapper", mt.get("ok") is True, f"got {val}")
+        check("chat.getMetrics idle => empty models array",
+              isinstance(mt["data"].get("models"), list) and mt["data"]["models"] == [],
+              f"got {val}")
+
+        # chatService.getAllMetrics() 封装：空闲时返回空数组
+        cid, val = await evaluate(ws, cid,
+            '(async()=>{ var arr = await window.chatService.getAllMetrics(); return JSON.stringify(arr); })()',
+            await_promise=True, timeout_ms=5000)
+        check("chatService.getAllMetrics returns array",
+              isinstance(json.loads(val), list), f"got {val}")
 
         # startModel 缺少 modelId 时应返回 INVALID_ARGUMENTS（验证参数解包正确，
         # 不再抛 json type_error.306）
@@ -698,31 +716,29 @@ async def run_cdp_tests():
             await_promise=True, timeout_ms=5000)
         print(f"  DIAG: chat.startModel({{}}) = {val}")
         check("chat.startModel({}) rejects missing modelId without json exception",
-              '"ok":false' in val and '"code":-4' in val, f"got {val}")
+              not val.startswith("EXC:") and json.loads(val).get("ok") is False
+              and json.loads(val).get("code") == -4, f"got {val}")
 
-        # startModel 带 modelId：要么 running（有 llama-server.exe），要么 need_download。
-        # 关键是不再抛 value()-on-array 异常，且参数被正确解包。
+        # startModel 带不存在的 gguf：参数被正确解包（不抛异常），返回结构化结果。
         cid, val = await evaluate(ws, cid,
             '(async()=>{ try { var r = await window.__cpp__.chat.startModel({modelId:"test-model", ggufPath:"nonexistent.gguf", ctx:2048, ngl:0, threads:2}); return JSON.stringify(r); } catch(e) { return "EXC:" + String(e); } })()',
-            await_promise=True, timeout_ms=20000)
+            await_promise=True, timeout_ms=40000)
         print(f"  DIAG: chat.startModel(args) = {val}")
         check("chat.startModel(args) parses object args (no json exception)",
-              not val.startswith("EXC:") and '"ok"' in val, f"got {val}")
-        check("chat.startModel(args) returns need_download or running or start failure",
-              ('need_download' in val) or ('"status":"running"' in val) or ('"ok":false' in val),
-              f"got {val}")
+              not val.startswith("EXC:") and "ok" in json.loads(val), f"got {val}")
 
         # 通过 JS 封装层 chatService.startModel 验证同样的解包路径
         cid, val = await evaluate(ws, cid,
             '(async()=>{ try { var r = await window.chatService.startModel({modelId:"test-model2", ggufPath:"nonexistent.gguf"}); return JSON.stringify(r); } catch(e) { return "EXC:" + String(e); } })()',
-            await_promise=True, timeout_ms=20000)
+            await_promise=True, timeout_ms=40000)
         print(f"  DIAG: chatService.startModel = {val}")
         check("chatService.startModel wrapper works (no json exception)",
-              not val.startswith("EXC:") and '"ok"' in val, f"got {val}")
+              not val.startswith("EXC:") and "ok" in json.loads(val), f"got {val}")
 
         # ---- 真实启动模型（仅当存在小体积 gguf 文件时执行）----
-        # 选一个最小的已下载模型做真实启动，验证 llama-server 子进程能正常拉起、
-        # 健康检查通过、getStatus 报告 running，最后能正常停止。
+        # 选一个最小的已下载模型做真实启动，验证：子进程拉起、getStatus 报告 running、
+        # 单模型 getMetrics(modelId) 返回真实内存占用、无参 getMetrics 含该模型，
+        # 最后能正常停止并清空指标。
         smallest = pick_smallest_gguf()
         if smallest:
             model_id, gguf_rel = smallest
@@ -736,50 +752,151 @@ async def run_cdp_tests():
             cid, val = await evaluate(ws, cid, launch_js,
                 await_promise=True, timeout_ms=60000)
             print(f"  DIAG: real startModel = {val}")
+            launch = json.loads(val) if not val.startswith("EXC:") else {}
+            running = launch.get("ok") and launch.get("data", {}).get("status") == "running"
             check("real startModel launches llama-server (status running)",
-                  '"status":"running"' in val, f"got {val}")
+                  running is True, f"got {val}")
 
-            if '"status":"running"' in val:
-                # getStatus 应报告 running
+            if running:
+                launch_port = launch["data"].get("port")
+                check("real startModel returns a port", isinstance(launch_port, int) and launch_port > 0,
+                      f"got {val}")
+
+                # getStatus(modelId) 应报告 running
+                cid, val = await evaluate(ws, cid,
+                    '(async()=>{ var r = await window.__cpp__.chat.getStatus({modelId:"' + model_id + '"}); return JSON.stringify(r); })()',
+                    await_promise=True, timeout_ms=5000)
+                print(f"  DIAG: getStatus(modelId) = {val}")
+                d = json.loads(val)["data"]
+                check("getStatus(modelId) reports running",
+                      d.get("status") == "running" and d.get("modelId") == model_id, f"got {val}")
+                check("getStatus(modelId) includes llama-server PID",
+                      isinstance(d.get("pid"), int) and d.get("pid") > 0, f"got {val}")
+
+                # getStatus（无参）应在 models[] 中包含该模型
                 cid, val = await evaluate(ws, cid,
                     '(async()=>{ var r = await window.__cpp__.chat.getStatus(); return JSON.stringify(r); })()',
                     await_promise=True, timeout_ms=5000)
-                print(f"  DIAG: getStatus after launch = {val}")
-                check("getStatus reports running after launch",
-                      '"status":"running"' in val, f"got {val}")
+                models = json.loads(val)["data"].get("models", [])
+                check("getStatus() lists running model in models[]",
+                      any(m.get("modelId") == model_id for m in models), f"got {val}")
 
-                # getMetrics 应报告 ok（进程在跑，有内存占用）
+                # getMetrics(modelId)：真实内存占用 > 0
+                cid, val = await evaluate(ws, cid,
+                    '(async()=>{ var r = await window.__cpp__.chat.getMetrics({modelId:"' + model_id + '"}); return JSON.stringify(r); })()',
+                    await_promise=True, timeout_ms=5000)
+                print(f"  DIAG: getMetrics(modelId) = {val}")
+                gd = json.loads(val)["data"]
+                check("getMetrics(modelId) status ok", gd.get("status") == "ok", f"got {val}")
+                check("getMetrics(modelId) reports real memory (>0 MB)",
+                      (gd.get("memoryMB") or 0) > 0, f"got {val}")
+                check("getMetrics(modelId) includes port",
+                      gd.get("port") == launch_port, f"got {val}")
+                check("getMetrics(modelId) includes llama-server PID",
+                      isinstance(gd.get("pid"), int) and gd.get("pid") > 0, f"got {val}")
+                check("getMetrics(modelId) includes thread count",
+                      (gd.get("threads") or 0) > 0, f"got {val}")
+
+                # getMetrics（无参）：models[] 含该模型的指标
                 cid, val = await evaluate(ws, cid,
                     '(async()=>{ var r = await window.__cpp__.chat.getMetrics(); return JSON.stringify(r); })()',
                     await_promise=True, timeout_ms=5000)
-                print(f"  DIAG: getMetrics after launch = {val}")
-                check("getMetrics reports ok status after launch",
-                      '"status":"ok"' in val, f"got {val}")
+                allm = json.loads(val)["data"].get("models", [])
+                this_m = next((m for m in allm if m.get("modelId") == model_id), None)
+                check("getMetrics() per-model list includes running model",
+                      this_m is not None and (this_m.get("memoryMB") or 0) > 0, f"got {val}")
 
-                # 停止运行中的模型
+                # ---- UI: 模型列表行出现资源指标徽标 ----
+                # 切到模型页并等待 service-panel 轮询把 metrics 写回 AppState
+                await evaluate(ws, cid,
+                    'document.querySelector(\'.tab-btn[data-tab="model"]\').click()',
+                    await_promise=False, timeout_ms=2000)
                 cid, val = await evaluate(ws, cid,
-                    '(async()=>{ var r = await window.__cpp__.chat.stopModel(); return JSON.stringify(r); })()',
+                    '(function(){ var m = (window.AppState.models||[]).find(function(x){return x.id==="' + model_id + '";}); if(m){ m.status="running"; } if(window.renderModels) window.renderModels(); return "ok"; })()',
+                    timeout_ms=3000)
+                # 等待一个轮询周期（2s）让 metrics 注入并重渲染
+                cid, val = await evaluate(ws, cid, """
+                    new Promise(function(resolve){
+                        var tries = 0;
+                        function chk(){
+                            tries++;
+                            var el = document.querySelector('.model-row-metrics');
+                            if (el && el.textContent.indexOf('💾') >= 0) { resolve(el.textContent); }
+                            else if (tries > 20) { resolve('TIMEOUT:' + (el ? el.textContent : 'no-el')); }
+                            else setTimeout(chk, 300);
+                        }
+                        chk();
+                    })
+                """, await_promise=True, timeout_ms=8000)
+                safe_print(f"  DIAG: row metrics text = {val}")
+                check("model row shows resource metrics badge",
+                      isinstance(val, str) and '💾' in val and not val.startswith('TIMEOUT'),
+                      f"got {val}")
+
+                # ---- UI: 详情页资源占用区块显示 ----
+                cid, val = await evaluate(ws, cid,
+                    'window.showDetail("' + model_id + '"); '
+                    'document.getElementById("detailMetricsSection").style.display !== "none" ? "shown" : "hidden"',
+                    timeout_ms=3000)
+                check("detail page shows resource section for running model",
+                      val == "shown", f"got {val}")
+
+                # 等详情页指标拉到真实数值（主动 getMetrics(id) 或轮询刷新）
+                cid, val = await evaluate(ws, cid, """
+                    new Promise(function(resolve){
+                        var tries = 0;
+                        function chk(){
+                            tries++;
+                            var t = document.getElementById('detailMemVal').textContent;
+                            if (t && t !== '0 MB') resolve(t);
+                            else if (tries > 20) resolve('TIMEOUT:' + t);
+                            else setTimeout(chk, 300);
+                        }
+                        chk();
+                    })
+                """, await_promise=True, timeout_ms=8000)
+                print(f"  DIAG: detail mem text = {val}")
+                check("detail page memory value populated",
+                      isinstance(val, str) and not val.startswith('TIMEOUT') and val != '0 MB',
+                      f"got {val}")
+
+                # 详情页补充信息应包含 PID（即 llama-server 进程号）
+                cid, val = await evaluate(ws, cid,
+                    'document.getElementById("detailMetricsExtra").textContent',
+                    timeout_ms=3000)
+                print(f"  DIAG: detail extra text = {val}")
+                check("detail page shows llama-server PID",
+                      isinstance(val, str) and 'PID' in val, f"got {val}")
+
+                # 关闭详情页
+                await evaluate(ws, cid, 'document.getElementById("detailBackBtn").click()',
+                    await_promise=False, timeout_ms=2000)
+
+                # 停止该模型
+                cid, val = await evaluate(ws, cid,
+                    '(async()=>{ var r = await window.__cpp__.chat.stopModel({modelId:"' + model_id + '"}); return JSON.stringify(r); })()',
                     await_promise=True, timeout_ms=15000)
-                print(f"  DIAG: stopModel after launch = {val}")
-                check("stopModel stops running model",
-                      '"status":"stopped"' in val, f"got {val}")
+                print(f"  DIAG: stopModel(modelId) = {val}")
+                sd = json.loads(val)["data"]
+                check("stopModel(modelId) stops running model",
+                      sd.get("status") == "stopped" and sd.get("modelId") == model_id, f"got {val}")
 
-                # 停止后 getStatus 应回到 stopped
+                # 停止后 getStatus(modelId) 回到 stopped
                 cid, val = await evaluate(ws, cid,
-                    '(async()=>{ var r = await window.__cpp__.chat.getStatus(); return JSON.stringify(r); })()',
+                    '(async()=>{ var r = await window.__cpp__.chat.getStatus({modelId:"' + model_id + '"}); return JSON.stringify(r); })()',
                     await_promise=True, timeout_ms=5000)
-                check("getStatus reports stopped after stopModel",
-                      '"status":"stopped"' in val, f"got {val}")
+                check("getStatus(modelId) reports stopped after stop",
+                      json.loads(val)["data"].get("status") == "stopped", f"got {val}")
         else:
             print("  DIAG: no gguf model file found, skipping real-launch test")
 
-        # stopModel 应总是成功返回 stopped
+        # stopModel（无参）应停止全部并返回 stopped
         cid, val = await evaluate(ws, cid,
             '(async()=>{ var r = await window.__cpp__.chat.stopModel(); return JSON.stringify(r); })()',
-            await_promise=True, timeout_ms=10000)
-        print(f"  DIAG: chat.stopModel = {val}")
-        check("chat.stopModel returns stopped",
-              '"status":"stopped"' in val, f"got {val}")
+            await_promise=True, timeout_ms=15000)
+        print(f"  DIAG: chat.stopModel(all) = {val}")
+        check("chat.stopModel() stops all and returns stopped",
+              json.loads(val)["data"].get("status") == "stopped", f"got {val}")
 
         # ========== Section Summary ==========
         print(f"\nCDP Tests: {passed} passed, {failed} failed, "

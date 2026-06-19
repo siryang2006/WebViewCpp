@@ -369,6 +369,29 @@
       </div>
     </div>
 
+    <!-- 资源占用（仅运行中显示） -->
+    <div class="detail-section" id="detailMetricsSection" style="display:none;">
+      <div class="detail-section-title">资源占用</div>
+      <div class="service-metrics">
+        <div class="metric-row">
+          <span class="metric-label">CPU</span>
+          <div class="metric-bar-wrap"><div class="metric-bar-fill" id="detailCpuBar" style="width:0%"></div></div>
+          <span class="metric-value" id="detailCpuVal">0%</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">内存</span>
+          <div class="metric-bar-wrap"><div class="metric-bar-fill" id="detailMemBar" style="width:0%"></div></div>
+          <span class="metric-value" id="detailMemVal">0 MB</span>
+        </div>
+        <div class="metric-row">
+          <span class="metric-label">显存</span>
+          <div class="metric-bar-wrap"><div class="metric-bar-fill" id="detailGpuBar" style="width:0%"></div></div>
+          <span class="metric-value" id="detailGpuVal">0 MB</span>
+        </div>
+      </div>
+      <div class="detail-metrics-extra" id="detailMetricsExtra"></div>
+    </div>
+
     <!-- 上下文配置 -->
     <div class="detail-section" id="detailCtxSection">
       <div class="detail-section-title">上下文大小</div>

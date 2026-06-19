@@ -25,14 +25,15 @@ class ChatService {
         });
     }
 
-    // 停止模型
-    stopModel() {
-        return window.__cpp__.chat.stopModel();
+    // 停止模型。modelId 可选：传入停止指定模型，不传停止全部。
+    stopModel(modelId) {
+        return window.__cpp__.chat.stopModel(modelId ? { modelId: modelId } : {});
     }
 
     // 流式对话：onToken(token) 逐 token 回调，返回 Promise 在完成时 resolve
     // C++ 通过 callback id 回调 { token, done }，本方法负责注册/清理回调。
-    chat(prompt, onToken) {
+    // modelId 可选：指定向哪个运行中的模型推理；不传时若只有一个模型在运行则用它。
+    chat(prompt, onToken, modelId) {
         var cbId = '__chat_cb_' + this._nextId++;
         var self = this;
 
@@ -57,7 +58,9 @@ class ChatService {
             // 发起推理。正常完成由 {done:true} 回调驱动 resolve；但兜底处理 RPC
             // 直接 resolve（C++ 已返回但未发 done 回调）的情况，避免 Promise 永挂、
             // 回调泄漏。cleanup/resolve 均幂等。
-            window.__cpp__.chat.chat({ prompt: prompt, callback: cbId })
+            var req = { prompt: prompt, callback: cbId };
+            if (modelId) req.modelId = modelId;
+            window.__cpp__.chat.chat(req)
                 .then(function() {
                     cleanup();
                     resolve();
@@ -69,14 +72,26 @@ class ChatService {
         });
     }
 
-    // 获取运行状态：{ status, modelId, port }
-    getStatus() {
-        return window.__cpp__.chat.getStatus();
+    // 获取运行状态。modelId 可选：
+    //   带 modelId → { status, modelId, port }
+    //   不带      → { status, models: [{modelId, port, status}, ...] }
+    getStatus(modelId) {
+        return window.__cpp__.chat.getStatus(modelId ? { modelId: modelId } : {});
     }
 
-    // 获取资源占用：{ status, memoryMB, cpuPercent, gpuMemoryMB, threads, handles }
-    getMetrics() {
-        return window.__cpp__.chat.getMetrics();
+    // 获取资源占用。modelId 可选：
+    //   带 modelId → { status, modelId, port, memoryMB, cpuPercent, gpuMemoryMB, threads, handles }
+    //   不带      → { status, models: [{modelId, memoryMB, cpuPercent, ...}, ...] }
+    getMetrics(modelId) {
+        return window.__cpp__.chat.getMetrics(modelId ? { modelId: modelId } : {});
+    }
+
+    // 获取所有运行中模型的指标，返回数组（封装无参 getMetrics）。
+    getAllMetrics() {
+        return window.__cpp__.chat.getMetrics({}).then(function(r) {
+            if (r && r.ok && r.data && Array.isArray(r.data.models)) return r.data.models;
+            return [];
+        });
     }
 }
 

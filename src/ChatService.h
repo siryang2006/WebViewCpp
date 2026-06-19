@@ -16,10 +16,12 @@
 #include <memory>
 #include <atomic>
 #include <mutex>
+#include <vector>
 
 // llama-server HTTP 推理服务
+// 支持多模型并发：每个模型一个 llama-server 子进程，独立端口、独立指标。
 // 子进程由 Subprocess 管理，Job Object 由 WebViewWrapper 统一处理，
-// 父进程退出时 llama-server 自动被终止。
+// 父进程退出时所有 llama-server 自动被终止。
 class ChatService : public CppObject {
 public:
     struct LlamaParams {
@@ -37,46 +39,54 @@ public:
     void on_created() override;
     void on_destroyed() override;
 
-    // 启动模型（异步）
+    // 启动模型（异步）。args: {modelId, ggufPath, ctx, ngl, threads, flashAttn, thinking}
     void startModel(const std::string& id, const json& args, WebViewWrapper* wv);
-    // 停止模型
+    // 停止模型。args: {modelId} 停止指定模型；无 modelId 时停止全部。
     json stopModel(const json& args);
-    // 聊天（流式，token 通过回调 ID 逐个推送到 JS）
+    // 聊天（流式，token 通过回调 ID 逐个推送到 JS）。args: {modelId?, prompt, callback}
     void chat(const std::string& id, const json& args, WebViewWrapper* wv);
-    // 获取当前运行状态
+    // 获取运行状态。args: {modelId?}。带 modelId 返回单模型；不带返回 {models:[...]}。
     json getStatus(const json& args);
-    // 获取资源占用
+    // 获取资源占用。args: {modelId?}。带 modelId 返回单模型；不带返回 {models:[...]}。
     json getMetrics(const json& args);
     // 下载 llama-server 二进制
     void downloadServer(const std::string& id, const json& args, WebViewWrapper* wv);
 
 private:
-    struct ModelInstance {
+    // 一个运行中的模型：独立子进程 + 端口。
+    struct RunningModel {
         std::string model_id;
         std::string gguf_path;
         LlamaParams params;
+        int port = 0;
+        std::unique_ptr<Subprocess> server;
         std::atomic<bool> running{false};
     };
 
     std::string getServerPath();
     std::string getExeDir();
-    std::string getServerUrl() const { return "http://127.0.0.1:" + std::to_string(m_port); }
-    int getAvailablePort();
+    int getAvailablePort(const std::vector<int>& exclude);
 
-    bool startServer(const std::string& gguf_path, const LlamaParams& params);
-    void stopServer();
+    // 启动一个 llama-server 子进程，成功时通过 out_port 返回端口、out_server 返回进程。
+    bool startServer(const std::string& gguf_path, const LlamaParams& params,
+                     const std::vector<int>& excludePorts,
+                     int& out_port, std::unique_ptr<Subprocess>& out_server);
+    // 停止指定 modelId；modelId 为空停止全部。
+    void stopServers(const std::string& modelId);
 
-    // 流式 HTTP 请求
-    bool streamingRequest(const json& messages, const std::string& callback_id, WebViewWrapper* wv);
+    // 解析参数对象中的 modelId（兼容 [{...}] 与 {...} 两种到达形式）。
+    static const json& unwrapArgs(const json& args);
+
+    // 单模型指标 JSON（含 modelId/port/资源占用）。须在锁外调用（CPU 采样）。
+    json metricsFor(RunningModel* rm);
+
+    // 流式 HTTP 请求（向指定端口的 llama-server 转发）
+    bool streamingRequest(int port, const json& messages,
+                          const std::string& callback_id, WebViewWrapper* wv);
 
     WebViewWrapper* m_wv = nullptr;
     std::mutex m_mutex;
 
-    // 当前运行中的模型
-    std::unique_ptr<ModelInstance> m_current;
-
-    // llama-server 子进程
-    std::unique_ptr<Subprocess> m_server;
-    int m_port = 0;
-    int m_serverPid = 0;
+    // 运行中的模型，按 modelId 索引
+    std::map<std::string, std::unique_ptr<RunningModel>> m_models;
 };

@@ -20,6 +20,23 @@
          : type.includes('Llama') ? 'Llama' : type;
   }
 
+  // 把内存(MB)格式化为 MB/GB
+  function fmtMem(mb) {
+    if (!mb) return '0 MB';
+    return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.round(mb) + ' MB';
+  }
+
+  // 运行中模型行的精简指标徽标：💾 内存 · ⚡ CPU · 🎮 显存
+  function formatRowMetrics(mt) {
+    if (!mt) return '';
+    var parts = [
+      '<span class="row-metric" title="内存">💾 ' + fmtMem(mt.memoryMB) + '</span>',
+      '<span class="row-metric" title="CPU">⚡ ' + (mt.cpuPercent || 0).toFixed(0) + '%</span>'
+    ];
+    if (mt.gpuMemoryMB) parts.push('<span class="row-metric" title="显存">🎮 ' + fmtMem(mt.gpuMemoryMB) + '</span>');
+    return parts.join('');
+  }
+
   function renderModels() {
     var models = window.AppState.models;
     var q = modelSearchInput.value.trim().toLowerCase();
@@ -64,6 +81,8 @@
             '<span class="model-row-tag gb">' + size + '</span>' +
             '<span class="model-row-tag type">' + tl + '</span>' +
           '</div>' +
+          (isRunning && m.metrics ?
+            '<div class="model-row-metrics" id="rowmetrics-' + idA + '">' + formatRowMetrics(m.metrics) + '</div>' : '') +
         '</div>' +
         (isRunning ? '<div class="model-row-status"><span class="status-dot-sm"></span>运行中</div>' : '') +
         '<div class="model-row-actions">' +
@@ -175,11 +194,12 @@
   /* ---- 停止运行中的模型 ---- */
   function stopModel(id) {
     var m = findModel(id);
-    if (m) m.status = 'downloaded';
+    if (m) { m.status = 'downloaded'; delete m.metrics; }
     renderModels();
     AppBus.emit('model:stopped', { id: id });
     if (window.chatService) {
-      window.chatService.stopModel().catch(function() {});
+      // 传入 id 仅停止该模型（支持多模型并发）
+      window.chatService.stopModel(id).catch(function() {});
     }
   }
 
@@ -310,6 +330,23 @@
       statusRow.innerHTML = '<span>未下载</span>';
     }
 
+    // 资源占用区块：仅运行中显示，立即拉一次指标并由 2s 轮询持续刷新。
+    var metricsSection = $('detailMetricsSection');
+    if (isRunning) {
+      metricsSection.style.display = '';
+      renderDetailMetrics(m.metrics);
+      // 主动拉一次，避免等到下个轮询周期才有数据
+      if (window.chatService) {
+        window.chatService.getMetrics(id).then(function(r) {
+          if (currentDetailId === id && r && r.ok && r.data && r.data.status === 'ok') {
+            renderDetailMetrics(r.data);
+          }
+        }).catch(function() {});
+      }
+    } else {
+      metricsSection.style.display = 'none';
+    }
+
     $('detailPath').textContent = m.gguf_path || ('models/' + m.id);
 
     // 上下文滑块（显示实际 token 数）
@@ -358,6 +395,45 @@
   function closeDetail() {
     $('detailPage').classList.remove('open');
     currentDetailId = null;
+  }
+
+  // 渲染详情页资源占用面板（mt: {memoryMB, cpuPercent, gpuMemoryMB, threads, handles}）
+  function renderDetailMetrics(mt) {
+    if (!mt) return;
+    var cpu = Math.min(mt.cpuPercent || 0, 100);
+    var memMB = mt.memoryMB || 0;
+    var gpuMB = mt.gpuMemoryMB || 0;
+    var memPct = Math.min(memMB / (16 * 1024) * 100, 100);
+
+    $('detailCpuBar').style.width = cpu + '%';
+    $('detailCpuBar').className = 'metric-bar-fill' + (cpu > 80 ? ' critical' : cpu > 60 ? ' high' : '');
+    $('detailCpuVal').textContent = cpu.toFixed(1) + '%';
+
+    $('detailMemBar').style.width = memPct + '%';
+    $('detailMemBar').className = 'metric-bar-fill' + (memPct > 85 ? ' critical' : memPct > 70 ? ' high' : '');
+    $('detailMemVal').textContent = fmtMem(memMB);
+
+    $('detailGpuBar').style.width = Math.min(gpuMB / 8192 * 100, 100) + '%';
+    $('detailGpuBar').className = 'metric-bar-fill' + (gpuMB > 6000 ? ' critical' : gpuMB > 4000 ? ' high' : '');
+    $('detailGpuVal').textContent = fmtMem(gpuMB);
+
+    var extra = [];
+    if (mt.pid) extra.push('PID ' + mt.pid);
+    if (mt.port) extra.push('端口 ' + mt.port);
+    if (mt.threads) extra.push('线程 ' + mt.threads);
+    if (mt.handles) extra.push('句柄 ' + mt.handles);
+    $('detailMetricsExtra').textContent = extra.join(' · ');
+  }
+
+  // 由 service-panel 的 2s 轮询调用：若详情页正展示某个运行中的模型，刷新其资源面板。
+  // byId: { modelId -> metrics对象 }
+  function refreshDetailMetrics(byId) {
+    if (!currentDetailId) return;
+    var mt = byId[currentDetailId];
+    if (mt && mt.status === 'ok') {
+      $('detailMetricsSection').style.display = '';
+      renderDetailMetrics(mt);
+    }
   }
 
   $('detailBackBtn').addEventListener('click', closeDetail);
@@ -419,6 +495,7 @@
   window.deleteModel = deleteModel;
   window.showDetail = showDetail;
   window.renderModels = renderModels;
+  window.refreshDetailMetrics = refreshDetailMetrics;
 
   loadModels();
 })();

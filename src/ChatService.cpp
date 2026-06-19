@@ -5,6 +5,7 @@
 #include <sstream>
 #include <iostream>
 #include <algorithm>
+#include <vector>
 
 ChatService::ChatService() {
     // curl 全局初始化由 main/WinMain 统一调用一次（libcurl 文档要求 call-once，
@@ -36,7 +37,7 @@ ChatService::ChatService() {
 }
 
 ChatService::~ChatService() {
-    stopServer();
+    stopServers("");  // 停止全部
     // curl_global_cleanup 由 main/WinMain 统一在进程退出前调用。
 }
 
@@ -46,62 +47,91 @@ void ChatService::on_created() {
 
 void ChatService::on_destroyed() {
     std::cout << "[ChatService] destroyed\n";
-    stopServer();
+    stopServers("");
+}
+
+// 异步桥接以 JS arguments 数组形式传参，foo({...}) 到达时为 [{...}]。
+const json& ChatService::unwrapArgs(const json& args) {
+    if (args.is_array() && !args.empty() && args[0].is_object()) return args[0];
+    return args;
 }
 
 void ChatService::startModel(const std::string& id, const json& args, WebViewWrapper* wv) {
     // wv由WebViewWrapper保证非空，直接存储
     m_wv = wv;
 
-    // 异步桥接以 JS arguments 数组形式传参，startModel({...}) 到达时为 [{...}]，
-    // 取首元素作为参数对象（与 DownloadService 一致）。
-    const json& params_obj = (args.is_array() && !args.empty() && args[0].is_object())
-                                 ? args[0] : args;
+    const json& p = unwrapArgs(args);
 
-    std::string model_id = params_obj.value("modelId", "");
+    std::string model_id = p.value("modelId", "");
     if (model_id.empty()) {
         wv->resolve(id, CppObject::error_result(ErrorCode::INVALID_ARGUMENTS, "modelId is required"));
         return;
     }
 
-    int ctx = params_obj.value("ctx", 4096);
-    bool thinking = params_obj.value("thinking", false);
-    std::string gguf_path = params_obj.value("ggufPath", "");
+    int ctx = p.value("ctx", 4096);
+    bool thinking = p.value("thinking", false);
+    std::string gguf_path = p.value("ggufPath", "");
 
     LlamaParams params;
     params.ctx = ctx;
     params.thinking = thinking;
-    params.n_gpu_layers = params_obj.value("ngl", -1);
-    params.threads = params_obj.value("threads", 4);
-    params.flash_attention = params_obj.value("flashAttn", true) ? 1 : 0;
+    params.n_gpu_layers = p.value("ngl", -1);
+    params.threads = p.value("threads", 4);
+    params.flash_attention = p.value("flashAttn", true) ? 1 : 0;
 
     wv->dispatch_task([this, id, model_id, gguf_path, params, wv]() {
+        // 该模型已在运行 → 幂等返回 running。
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            auto it = m_models.find(model_id);
+            if (it != m_models.end() && it->second->running.load()) {
+                int port = it->second->port;
+                json d = json::object();
+                d["status"] = "running";
+                d["modelId"] = model_id;
+                d["port"] = port;
+                wv->resolve(id, CppObject::ok_result(d));
+                return;
+            }
+        }
+
         // 检查 llama-server 是否存在
         std::string server_path = getServerPath();
         if (!std::ifstream(server_path).good()) {
-            wv->resolve(id, CppObject::ok_result({{
-                {"status", "need_download"},
-                {"message", "llama-server not found"}
-            }}));
+            json d = json::object();
+            d["status"] = "need_download";
+            d["message"] = "llama-server not found";
+            wv->resolve(id, CppObject::ok_result(d));
             return;
         }
 
-        // 停止之前的
-        stopServer();
-
-        if (startServer(gguf_path, params)) {
+        // 收集已占用端口，避免与已运行模型冲突。
+        std::vector<int> usedPorts;
+        {
             std::lock_guard<std::mutex> lock(m_mutex);
-            m_current = std::make_unique<ModelInstance>();
-            m_current->model_id = model_id;
-            m_current->gguf_path = gguf_path;
-            m_current->params = params;
-            m_current->running = true;
+            for (auto& [mid, rm] : m_models) {
+                if (rm->running.load()) usedPorts.push_back(rm->port);
+            }
+        }
 
-            wv->resolve(id, CppObject::ok_result({{
-                {"status", "running"},
-                {"modelId", model_id},
-                {"port", m_port}
-            }}));
+        int port = 0;
+        std::unique_ptr<Subprocess> server;
+        if (startServer(gguf_path, params, usedPorts, port, server)) {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            auto rm = std::make_unique<RunningModel>();
+            rm->model_id = model_id;
+            rm->gguf_path = gguf_path;
+            rm->params = params;
+            rm->port = port;
+            rm->server = std::move(server);
+            rm->running = true;
+            m_models[model_id] = std::move(rm);
+
+            json d = json::object();
+            d["status"] = "running";
+            d["modelId"] = model_id;
+            d["port"] = port;
+            wv->resolve(id, CppObject::ok_result(d));
         } else {
             wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR, "Failed to start llama-server"));
         }
@@ -109,32 +139,52 @@ void ChatService::startModel(const std::string& id, const json& args, WebViewWra
 }
 
 json ChatService::stopModel(const json& args) {
-    stopServer();
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_current.reset();
-    return CppObject::ok_result({{"status", "stopped"}});
+    const json& p = unwrapArgs(args);
+    std::string model_id = p.is_object() ? p.value("modelId", "") : "";
+
+    stopServers(model_id);
+
+    json d = json::object();
+    d["status"] = "stopped";
+    if (model_id.empty()) {
+        d["scope"] = "all";
+    } else {
+        d["modelId"] = model_id;
+    }
+    return CppObject::ok_result(d);
 }
 
 void ChatService::chat(const std::string& id, const json& args, WebViewWrapper* wv) {
-    // 异步桥接以 JS arguments 数组形式传参，chat({...}) 到达时为 [{...}]。
-    const json& params_obj = (args.is_array() && !args.empty() && args[0].is_object())
-                                 ? args[0] : args;
+    const json& p = unwrapArgs(args);
 
-    std::string prompt = params_obj.value("prompt", "");
-    std::string callback = params_obj.value("callback", "");
+    std::string prompt = p.value("prompt", "");
+    std::string callback = p.value("callback", "");
+    std::string model_id = p.value("modelId", "");
 
     if (prompt.empty()) {
         wv->resolve(id, CppObject::error_result(ErrorCode::INVALID_ARGUMENTS, "prompt is required"));
         return;
     }
 
-    bool running = false;
+    // 解析目标端口：带 modelId 用指定模型；否则用唯一运行模型。
+    int port = 0;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        running = m_current && m_current->running;
+        if (!model_id.empty()) {
+            auto it = m_models.find(model_id);
+            if (it != m_models.end() && it->second->running.load()) port = it->second->port;
+        } else {
+            // 无 modelId：若仅一个模型在运行则用它。
+            RunningModel* only = nullptr;
+            int count = 0;
+            for (auto& [mid, rm] : m_models) {
+                if (rm->running.load()) { only = rm.get(); count++; }
+            }
+            if (count == 1 && only) port = only->port;
+        }
     }
 
-    if (!running) {
+    if (port == 0) {
         wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR, "No model is running"));
         return;
     }
@@ -142,7 +192,7 @@ void ChatService::chat(const std::string& id, const json& args, WebViewWrapper* 
     json messages = json::array();
     messages.push_back({{"role", "user"}, {"content", prompt}});
 
-    if (!streamingRequest(messages, callback, wv)) {
+    if (!streamingRequest(port, messages, callback, wv)) {
         wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR, "Request failed"));
     } else {
         wv->resolve(id, CppObject::ok_result({{"status", "completed"}}));
@@ -150,44 +200,106 @@ void ChatService::chat(const std::string& id, const json& args, WebViewWrapper* 
 }
 
 json ChatService::getStatus(const json& args) {
+    const json& p = unwrapArgs(args);
+    std::string model_id = p.is_object() ? p.value("modelId", "") : "";
+
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_current && m_current->running) {
-        return CppObject::ok_result({{
-            {"status", "running"},
-            {"modelId", m_current->model_id},
-            {"port", m_port}
-        }});
+    if (!model_id.empty()) {
+        auto it = m_models.find(model_id);
+        if (it != m_models.end() && it->second->running.load()) {
+            json d = json::object();
+            d["status"] = "running";
+            d["modelId"] = model_id;
+            d["port"] = it->second->port;
+            d["pid"] = it->second->server ? it->second->server->pid() : 0;
+            return CppObject::ok_result(d);
+        }
+        json d = json::object();
+        d["status"] = "stopped";
+        d["modelId"] = model_id;
+        return CppObject::ok_result(d);
     }
-    return CppObject::ok_result({{"status", "stopped"}});
+
+    // 无 modelId：返回所有运行中模型列表。
+    json models = json::array();
+    for (auto& [mid, rm] : m_models) {
+        if (rm->running.load()) {
+            json m = json::object();
+            m["modelId"] = mid;
+            m["port"] = rm->port;
+            m["pid"] = rm->server ? rm->server->pid() : 0;
+            m["status"] = "running";
+            models.push_back(std::move(m));
+        }
+    }
+    json d = json::object();
+    d["status"] = models.empty() ? "stopped" : "running";
+    d["models"] = std::move(models);
+    return CppObject::ok_result(d);
+}
+
+// 采集单模型指标。须在锁外调用：Subprocess::getMetrics 可能采样 CPU。
+json ChatService::metricsFor(RunningModel* rm) {
+    ProcessMetrics metrics = {};
+    bool ok = false;
+    if (rm && rm->server && rm->server->isRunning()) {
+        ok = rm->server->getMetrics(metrics);
+    }
+    json d = json::object();
+    if (ok) {
+        d["modelId"] = rm->model_id;
+        d["port"] = rm->port;
+        d["pid"] = rm->server ? rm->server->pid() : 0;
+        d["status"] = "ok";
+        d["memoryMB"] = metrics.memoryMB;
+        d["cpuPercent"] = metrics.cpuPercent;
+        d["gpuMemoryMB"] = metrics.gpuMemoryMB;
+        d["threads"] = metrics.threads;
+        d["handles"] = metrics.handleCount;
+    } else {
+        d["modelId"] = rm ? rm->model_id : "";
+        d["status"] = "stopped";
+        d["memoryMB"] = 0;
+        d["cpuPercent"] = 0.0;
+        d["gpuMemoryMB"] = 0;
+    }
+    return d;
 }
 
 json ChatService::getMetrics(const json& args) {
-    ProcessMetrics metrics = {};
-    bool ok = false;
+    const json& p = unwrapArgs(args);
+    std::string model_id = p.is_object() ? p.value("modelId", "") : "";
 
+    if (!model_id.empty()) {
+        // 锁内取指针引用，锁内采样单个模型，避免与 stop 竞争删除。
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto it = m_models.find(model_id);
+        if (it != m_models.end() && it->second->running.load()) {
+            return CppObject::ok_result(metricsFor(it->second.get()));
+        }
+        json d = json::object();
+        d["status"] = "stopped";
+        d["modelId"] = model_id;
+        d["memoryMB"] = 0;
+        d["cpuPercent"] = 0.0;
+        d["gpuMemoryMB"] = 0;
+        return CppObject::ok_result(d);
+    }
+
+    // 无 modelId：返回每个运行模型一份指标。
+    json models = json::array();
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_server && m_server->isRunning()) {
-            ok = m_server->getMetrics(metrics);
+        for (auto& [mid, rm] : m_models) {
+            if (rm->running.load()) {
+                models.push_back(metricsFor(rm.get()));
+            }
         }
     }
-
-    if (ok) {
-        return CppObject::ok_result({{
-            {"status", "ok"},
-            {"memoryMB", metrics.memoryMB},
-            {"cpuPercent", metrics.cpuPercent},
-            {"gpuMemoryMB", metrics.gpuMemoryMB},
-            {"threads", metrics.threads},
-            {"handles", metrics.handleCount}
-        }});
-    }
-    return CppObject::ok_result({{
-        {"status", "stopped"},
-        {"memoryMB", 0},
-        {"cpuPercent", 0.0},
-        {"gpuMemoryMB", 0}
-    }});
+    json d = json::object();
+    d["status"] = models.empty() ? "stopped" : "ok";
+    d["models"] = std::move(models);
+    return CppObject::ok_result(d);
 }
 
 void ChatService::downloadServer(const std::string& id, const json& args, WebViewWrapper* wv) {
@@ -218,8 +330,10 @@ std::string ChatService::getServerPath() {
     return exe_dir + "/llama-server.exe";
 }
 
-int ChatService::getAvailablePort() {
+int ChatService::getAvailablePort(const std::vector<int>& exclude) {
     for (int port = 8080; port <= 9090; ++port) {
+        if (std::find(exclude.begin(), exclude.end(), port) != exclude.end()) continue;
+
         SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
         if (s == INVALID_SOCKET) continue;
 
@@ -234,13 +348,14 @@ int ChatService::getAvailablePort() {
         }
         closesocket(s);
     }
-    return 8080;
+    return 0;  // 无可用端口
 }
 
-bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& params) {
-    // 端口与参数都用局部变量，启动阶段不持 m_mutex —— start() 内部健康检查会
-    // 阻塞最多 15s，若持锁会冻结 GUI 线程的 getStatus/getMetrics/stopModel。
-    int port = getAvailablePort();
+bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& params,
+                              const std::vector<int>& excludePorts,
+                              int& out_port, std::unique_ptr<Subprocess>& out_server) {
+    int port = getAvailablePort(excludePorts);
+    if (port == 0) return false;
 
     std::string exe_dir = getExeDir();
 
@@ -281,38 +396,40 @@ bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& p
         return res == CURLE_OK && code == 200;
     };
 
-    // 进程退出回调（仅真实崩溃时由 monitor 线程调用；主动 stop 会跳过）。
-    auto onExit = [this](int exitCode) {
-        std::cerr << "[ChatService] llama-server exited with code " << exitCode << "\n";
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_current) m_current->running = false;
-    };
-
     // 工作目录设为 exe 目录：保证 gguf 相对路径、DLL 依赖（llama-bin 下的 ggml*.dll）
     // 等都能正确解析。健康检查放宽到 30s —— 大模型加载 + warmup 可能较慢。
     auto server = std::make_unique<Subprocess>();
-    bool ok = server->start(getServerPath(), args.str(), exe_dir, healthCheck, 30000, onExit);
+    bool ok = server->start(getServerPath(), args.str(), exe_dir, healthCheck, 30000, nullptr);
 
-    // 启动成功后才在锁内发布 m_server / m_port。
     if (ok) {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_port = port;
-        m_server = std::move(server);
-        m_serverPid = m_server->pid();
+        out_port = port;
+        out_server = std::move(server);
     }
     return ok;
 }
 
-void ChatService::stopServer() {
-    // 把 m_server 移出锁外再 stop()/析构 —— stop() 优雅终止会阻塞最多 5s，
+void ChatService::stopServers(const std::string& modelId) {
+    // 把要停止的 Subprocess 移出锁外再 stop()/析构 —— stop() 优雅终止会阻塞最多 5s，
     // 不能在持锁时做（stopModel 是 GUI 线程 bind_sync）。
-    std::unique_ptr<Subprocess> server;
+    std::vector<std::unique_ptr<Subprocess>> toStop;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        server = std::move(m_server);
-        if (m_current) m_current->running = false;
+        if (modelId.empty()) {
+            for (auto& [mid, rm] : m_models) {
+                rm->running = false;
+                if (rm->server) toStop.push_back(std::move(rm->server));
+            }
+            m_models.clear();
+        } else {
+            auto it = m_models.find(modelId);
+            if (it != m_models.end()) {
+                it->second->running = false;
+                if (it->second->server) toStop.push_back(std::move(it->second->server));
+                m_models.erase(it);
+            }
+        }
     }
-    if (server) {
+    for (auto& server : toStop) {
         server->stop(true);  // 优雅终止；析构进一步兜底
     }
 }
@@ -363,7 +480,8 @@ size_t streamWriteCallback(char* ptr, size_t size, size_t nmemb, void* userdata)
 }
 } // namespace
 
-bool ChatService::streamingRequest(const json& messages, const std::string& callback_id, WebViewWrapper* wv) {
+bool ChatService::streamingRequest(int port, const json& messages,
+                                   const std::string& callback_id, WebViewWrapper* wv) {
     CURL* curl = curl_easy_init();
     if (!curl) return false;
 
@@ -372,7 +490,7 @@ bool ChatService::streamingRequest(const json& messages, const std::string& call
         {"stream", true}
     };
     std::string body_str = body.dump();
-    std::string url = getServerUrl() + "/v1/chat/completions";
+    std::string url = "http://127.0.0.1:" + std::to_string(port) + "/v1/chat/completions";
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_POST, 1L);

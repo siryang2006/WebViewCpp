@@ -47,7 +47,7 @@ Three layers, bottom-up:
 ### Services
 
 - **`DownloadService`** — libcurl download with pause/resume/cancel. One thread per `modelId`, progress via JS callback.
-- **`ChatService`** — llama-server subprocess management + HTTP streaming inference.
+- **`ChatService`** — llama-server subprocess management + HTTP streaming inference. **Multi-model**: runs several `llama-server` instances concurrently, keyed by `modelId`, each with its own port + `Subprocess` + metrics. `startModel({modelId,...})` / `stopModel({modelId?})` (no modelId = stop all) / `chat({modelId?, prompt, callback})`. `getStatus`/`getMetrics` take an optional `modelId`: with it they return one model's object; without it they return `{status, models:[...]}` (one entry per running model). Per-model metrics include `memoryMB`, `cpuPercent`, `gpuMemoryMB`, `threads`, `handles`, `port`, and `pid` (the `llama-server.exe` process id — the subprocess runs hidden via `CREATE_NO_WINDOW`, but is a real OS process visible in Task Manager).
 - **`Subprocess`** — reusable child process manager (start/stop/monitor, process metrics).
 - **`ConfigService`** — manages `models.json`, detects file existence for model status.
 
@@ -96,6 +96,8 @@ tests/
 
 | Fix | Description |
 |-----|-------------|
+| ChatService working dir | `startServer` passes exe dir as subprocess cwd; relative gguf paths resolved against it (else model file + llama-bin DLLs not found) |
+| nlohmann object vs array | `ok_result({{ {"a",1},{"b",arr} }})` builds an **array** when a value is itself array/object — build results via explicit `json::object()` + `d["k"]=v` to force an object |
 | Pending callback registration | `__webview_async_call__`: register callback BEFORE object lookup |
 | Callback lock order | `__cpp_result__`: invoke callbacks OUTSIDE `m_callback_mutex` |
 | JSON.stringify(undefined) | Coalesce to `null` in `call_js` / `call_js_fn` |
