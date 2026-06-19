@@ -431,7 +431,94 @@ async def run_cdp_tests():
             "(function(){var c=document.querySelectorAll('.feature-card');c[1].click();return c[1].classList.contains('active');})()")
         check("feature card click adds active class", val)
 
-        # Model tab - switch to model page (index 0)
+        # ========== 左侧对话列表 ==========
+
+        # 初始应有一个默认对话
+        cid, val = await evaluate(ws, cid,
+            "document.querySelectorAll('#chatHistory .chat-item').length")
+        check("sidebar has default conversation", val >= 1, f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "document.querySelector('#chatHistory .chat-item .chat-item-text')?.textContent")
+        check("default chat item title is 新对话",
+              val and "新对话" in val, f"got {val}")
+
+        # 新建对话按钮应增加条目
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                document.getElementById('newChatBtn').click();
+                return document.querySelectorAll('#chatHistory .chat-item').length;
+            })()
+        """)
+        check("new chat creates second item", val >= 2, f"got {val}")
+
+        # 切回第一个对话
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                var items = document.querySelectorAll('#chatHistory .chat-item');
+                if (items.length >= 2) items[0].click();
+                return document.querySelectorAll('#chatHistory .chat-item.active').length;
+            })()
+        """)
+        check("switch conversation works", val >= 1, f"got {val}")
+
+        # 新对话应显示欢迎卡片、隐藏聊天区
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                document.getElementById('newChatBtn').click();
+                var wc = document.getElementById('welcomeCard');
+                var ca = document.getElementById('chatArea');
+                return JSON.stringify({
+                    welcomeDisplay: wc ? wc.style.display : 'no-el',
+                    chatDisplay: ca ? ca.style.display : 'no-el'
+                });
+            })()
+        """)
+        sd = json.loads(val)
+        check("new chat shows welcome card", sd.get("welcomeDisplay") != "none", f"got {val}")
+        check("new chat hides chat area", sd.get("chatDisplay") == "none", f"got {val}")
+
+        # 发送一条消息后对话标题应更新为首条用户消息
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                var ib = document.getElementById('inputBox');
+                var sb = document.getElementById('sendBtn');
+                ib.value = '测试对话标题更新';
+                ib.dispatchEvent(new Event('input', {bubbles: true}));
+                sb.click();
+                return 'sent';
+            })()
+        """)
+        check("send message click works", val == "sent", f"got {val}")
+        await asyncio.sleep(1)
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                var items = document.querySelectorAll('#chatHistory .chat-item');
+                if (items.length === 0) return 'no-items';
+                var title = items[items.length - 1].querySelector('.chat-item-text')?.textContent || '';
+                return title;
+            })()
+        """)
+        check("sidebar title updates to user message",
+              val and "测试对话标题更新" in val, f"got {val}")
+
+        # 删除对话：条目减少
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                var items = document.querySelectorAll('#chatHistory .chat-item');
+                var before = items.length;
+                var del = items[items.length - 1].querySelector('.chat-item-delete');
+                if (del) del.click();
+                var after = document.querySelectorAll('#chatHistory .chat-item').length;
+                return JSON.stringify({ before: before, after: after });
+            })()
+        """)
+        sd = json.loads(val)
+        check("delete conversation reduces item count",
+              sd.get("after", 0) < sd.get("before", 0), f"got {val}")
+        await asyncio.sleep(0.3)
+
+        # ========== 模型 Tab ==========
         cid, val = await evaluate(ws, cid,
             "(function(){document.querySelectorAll('.tab-btn')[0].click();return 'switched';})()")
         check("model tab click switches tab", val == "switched")
