@@ -25,8 +25,8 @@ document.querySelectorAll('.feature-card').forEach(function(card) {
   });
 });
 
-$('cardsPrev').addEventListener('click', function() { $('cardsTrack').scrollBy({ left: -240, behavior: 'smooth' }); });
-$('cardsNext').addEventListener('click', function() { $('cardsTrack').scrollBy({ left: 240, behavior: 'smooth' }); });
+$('cardsPrev').addEventListener('click', function() { $('cardsTrack').scrollBy({ left: -200, behavior: 'smooth' }); });
+$('cardsNext').addEventListener('click', function() { $('cardsTrack').scrollBy({ left: 200, behavior: 'smooth' }); });
 
 /* ---- 推荐问题 ---- */
 document.querySelectorAll('.chip').forEach(function(chip) {
