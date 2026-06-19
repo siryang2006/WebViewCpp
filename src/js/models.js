@@ -438,8 +438,11 @@
 
   $('detailBackBtn').addEventListener('click', closeDetail);
   $('detailCloseBtn2').addEventListener('click', closeDetail);
-  function onDetailCtxInput(e) {
-    $('detailCtxVal').textContent = CTX_STEPS[parseInt(e.target.value)];
+  function onDetailCtxInput() {
+    var idx = parseInt(this.value);
+    if (idx >= 0 && idx < CTX_STEPS.length) {
+      $('detailCtxVal').textContent = CTX_STEPS[idx];
+    }
   }
   $('detailCtxSlider').addEventListener('input', onDetailCtxInput);
   $('detailCtxSlider').addEventListener('change', onDetailCtxInput);

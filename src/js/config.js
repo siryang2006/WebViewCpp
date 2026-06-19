@@ -61,9 +61,12 @@
     $('configCmdPreview').textContent = parts.join(' ');
   }
 
-  function onCtxInput(e) {
-    $('configCtx').textContent = CTX_STEPS[parseInt(e.target.value)];
-    updateCmdPreview();
+  function onCtxInput() {
+    var idx = parseInt(this.value);
+    if (idx >= 0 && idx < CTX_STEPS.length) {
+      $('configCtx').textContent = CTX_STEPS[idx];
+      updateCmdPreview();
+    }
   }
   $('configCtxSlider').addEventListener('input', onCtxInput);
   $('configCtxSlider').addEventListener('change', onCtxInput);
