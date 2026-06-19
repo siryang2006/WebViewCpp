@@ -53,22 +53,27 @@ void ChatService::startModel(const std::string& id, const json& args, WebViewWra
     // wv由WebViewWrapper保证非空，直接存储
     m_wv = wv;
 
-    std::string model_id = args.value("modelId", "");
+    // 异步桥接以 JS arguments 数组形式传参，startModel({...}) 到达时为 [{...}]，
+    // 取首元素作为参数对象（与 DownloadService 一致）。
+    const json& params_obj = (args.is_array() && !args.empty() && args[0].is_object())
+                                 ? args[0] : args;
+
+    std::string model_id = params_obj.value("modelId", "");
     if (model_id.empty()) {
         wv->resolve(id, CppObject::error_result(ErrorCode::INVALID_ARGUMENTS, "modelId is required"));
         return;
     }
 
-    int ctx = args.value("ctx", 4096);
-    bool thinking = args.value("thinking", false);
-    std::string gguf_path = args.value("ggufPath", "");
+    int ctx = params_obj.value("ctx", 4096);
+    bool thinking = params_obj.value("thinking", false);
+    std::string gguf_path = params_obj.value("ggufPath", "");
 
     LlamaParams params;
     params.ctx = ctx;
     params.thinking = thinking;
-    params.n_gpu_layers = args.value("ngl", -1);
-    params.threads = args.value("threads", 4);
-    params.flash_attention = args.value("flashAttn", true) ? 1 : 0;
+    params.n_gpu_layers = params_obj.value("ngl", -1);
+    params.threads = params_obj.value("threads", 4);
+    params.flash_attention = params_obj.value("flashAttn", true) ? 1 : 0;
 
     wv->dispatch_task([this, id, model_id, gguf_path, params, wv]() {
         // 检查 llama-server 是否存在
@@ -111,8 +116,12 @@ json ChatService::stopModel(const json& args) {
 }
 
 void ChatService::chat(const std::string& id, const json& args, WebViewWrapper* wv) {
-    std::string prompt = args.value("prompt", "");
-    std::string callback = args.value("callback", "");
+    // 异步桥接以 JS arguments 数组形式传参，chat({...}) 到达时为 [{...}]。
+    const json& params_obj = (args.is_array() && !args.empty() && args[0].is_object())
+                                 ? args[0] : args;
+
+    std::string prompt = params_obj.value("prompt", "");
+    std::string callback = params_obj.value("callback", "");
 
     if (prompt.empty()) {
         wv->resolve(id, CppObject::error_result(ErrorCode::INVALID_ARGUMENTS, "prompt is required"));
@@ -188,12 +197,16 @@ void ChatService::downloadServer(const std::string& id, const json& args, WebVie
     }}));
 }
 
-std::string ChatService::getServerPath() {
+std::string ChatService::getExeDir() {
     char exe_path[MAX_PATH];
     GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
     std::string exe_dir(exe_path);
     auto sep = exe_dir.find_last_of("/\\");
-    exe_dir = (sep == std::string::npos) ? "." : exe_dir.substr(0, sep);
+    return (sep == std::string::npos) ? "." : exe_dir.substr(0, sep);
+}
+
+std::string ChatService::getServerPath() {
+    std::string exe_dir = getExeDir();
 
     // 优先从 llama-bin 子目录（CMake 复制位置）查找
     std::string server_path = exe_dir + "/llama-bin/llama-server.exe";
@@ -229,9 +242,22 @@ bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& p
     // 阻塞最多 15s，若持锁会冻结 GUI 线程的 getStatus/getMetrics/stopModel。
     int port = getAvailablePort();
 
+    std::string exe_dir = getExeDir();
+
+    // gguf_path 多为相对路径（如 downloads/xxx/model.gguf，来自 models.json）。
+    // 子进程工作目录设为 exe 目录后，相对路径即以 exe 目录为基准解析；
+    // 绝对路径（含盘符或 UNC）原样传递。
+    std::string model_arg = gguf_path;
+    bool is_absolute = (gguf_path.size() >= 2 && gguf_path[1] == ':') ||
+                       (gguf_path.size() >= 2 && (gguf_path[0] == '\\' || gguf_path[0] == '/') &&
+                        (gguf_path[1] == '\\' || gguf_path[1] == '/'));
+    if (!is_absolute && !gguf_path.empty()) {
+        model_arg = exe_dir + "/" + gguf_path;
+    }
+
     // 构建命令行参数
     std::ostringstream args;
-    args << "-m \"" << gguf_path << "\"";
+    args << "-m \"" << model_arg << "\"";
     args << " -c " << params.ctx;
     args << " -ngl " << params.n_gpu_layers;
     args << " -t " << params.threads;
@@ -262,8 +288,10 @@ bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& p
         if (m_current) m_current->running = false;
     };
 
+    // 工作目录设为 exe 目录：保证 gguf 相对路径、DLL 依赖（llama-bin 下的 ggml*.dll）
+    // 等都能正确解析。健康检查放宽到 30s —— 大模型加载 + warmup 可能较慢。
     auto server = std::make_unique<Subprocess>();
-    bool ok = server->start(getServerPath(), args.str(), "", healthCheck, 15000, onExit);
+    bool ok = server->start(getServerPath(), args.str(), exe_dir, healthCheck, 30000, onExit);
 
     // 启动成功后才在锁内发布 m_server / m_port。
     if (ok) {

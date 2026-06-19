@@ -59,6 +59,7 @@ private:
     };
 
     std::string getServerPath();
+    std::string getExeDir();
     std::string getServerUrl() const { return "http://127.0.0.1:" + std::to_string(m_port); }
     int getAvailablePort();
 
