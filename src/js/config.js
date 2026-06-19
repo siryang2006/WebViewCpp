@@ -61,10 +61,12 @@
     $('configCmdPreview').textContent = parts.join(' ');
   }
 
-  $('configCtxSlider').addEventListener('input', function(e) {
+  function onCtxInput(e) {
     $('configCtx').textContent = CTX_STEPS[parseInt(e.target.value)];
     updateCmdPreview();
-  });
+  }
+  $('configCtxSlider').addEventListener('input', onCtxInput);
+  $('configCtxSlider').addEventListener('change', onCtxInput);
   $('configNglSlider').addEventListener('input', function(e) {
     var v = parseInt(e.target.value);
     $('configNgl').textContent = v === -1 ? '全部' : (v === 0 ? '纯CPU' : v);

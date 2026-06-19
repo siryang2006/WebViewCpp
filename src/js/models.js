@@ -438,9 +438,11 @@
 
   $('detailBackBtn').addEventListener('click', closeDetail);
   $('detailCloseBtn2').addEventListener('click', closeDetail);
-  $('detailCtxSlider').addEventListener('input', function(e) {
+  function onDetailCtxInput(e) {
     $('detailCtxVal').textContent = CTX_STEPS[parseInt(e.target.value)];
-  });
+  }
+  $('detailCtxSlider').addEventListener('input', onDetailCtxInput);
+  $('detailCtxSlider').addEventListener('change', onDetailCtxInput);
 
   /* ---- 筛选 ---- */
   expandFilterBtn.addEventListener('click', function() {
