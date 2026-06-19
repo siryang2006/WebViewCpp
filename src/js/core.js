@@ -39,7 +39,9 @@ function parseCtxToTokens(ctx) {
 window.AppState = {
   models: [],         // 模型列表（models.js 维护）
   apiPort: 0,          // 当前运行模型的 HTTP 端口（service-panel.js 维护，chat.js 读取）
-  selectedModelId: ''  // 对话页选中的运行模型 id（chat.js 维护）
+  selectedModelId: '',  // 对话页选中的运行模型 id（chat.js 维护）
+  conversations: [],   // 对话列表 [{id, title, messages, time}]
+  currentConvId: null  // 当前对话 id
 };
 
 // ================================================================

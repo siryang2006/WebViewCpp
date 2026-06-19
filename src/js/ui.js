@@ -68,14 +68,4 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
   document.querySelector('.tab-btn[data-tab="model"]').click();
 })();
 
-/* ---- 侧边栏对话项点击 ---- */
-document.querySelectorAll('.chat-item').forEach(function(item) {
-  item.addEventListener('click', function(e) {
-    if (e.target.classList.contains('chat-item-delete')) {
-      item.remove();
-      return;
-    }
-    document.querySelectorAll('.chat-item').forEach(function(i) { i.classList.remove('active'); });
-    item.classList.add('active');
-  });
-});
+
