@@ -96,7 +96,7 @@
 
       // 兼容旧的单对象结构
       if (d.status === 'ok') applyMetricsToBars(d);
-    }).catch(function() {});
+    }).catch(function() {}); // 2s 轮询，无模型运行时失败是常态，静默忽略避免噪音
   }
   setInterval(updateMetrics, 2000);
 

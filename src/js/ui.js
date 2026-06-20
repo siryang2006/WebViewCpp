@@ -8,7 +8,8 @@
   var themeToggle = $('themeToggle');
   var currentTheme = 'dark'; // 内存状态，WebView2 set_html 无 origin 不支持 localStorage
   document.documentElement.setAttribute('data-theme', currentTheme);
-  themeToggle.textContent = '☀';
+  // 图标表示点击后切换到的目标主题：当前 dark → 显示 ☀(切到亮色)，当前 light → 显示 🌙(切到暗色)
+  themeToggle.textContent = currentTheme === 'dark' ? '☀' : '🌙';
 
   themeToggle.addEventListener('click', function() {
     currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
@@ -103,11 +104,21 @@ $('translateSwap').addEventListener('click', function() {
 
 /* ---- 翻译：复制结果 ---- */
 $('translateCopy').addEventListener('click', function() {
+  var btn = this;
   var output = $('translateOutput');
   var text = output.textContent;
-  if (text && text !== '翻译结果将显示在这里') {
-    navigator.clipboard.writeText(text).catch(function() {});
-  }
+  if (!text || text === '翻译结果将显示在这里') return;
+  navigator.clipboard.writeText(text).then(function() {
+    // 复制成功：短暂显示 ✓ 反馈
+    var orig = btn.textContent;
+    btn.textContent = '✓';
+    setTimeout(function() { btn.textContent = orig; }, 1200);
+  }).catch(function() {
+    // 复制失败：提示用户手动复制
+    var orig = btn.textContent;
+    btn.textContent = '✕';
+    setTimeout(function() { btn.textContent = orig; }, 1200);
+  });
 });
 
 /* ---- 图片上传 ---- */

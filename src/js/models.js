@@ -199,7 +199,9 @@
     AppBus.emit('model:stopped', { id: id });
     if (window.chatService) {
       // 传入 id 仅停止该模型（支持多模型并发）
-      window.chatService.stopModel(id).catch(function() {});
+      window.chatService.stopModel(id).catch(function(e) {
+        console.error('[models] stopModel failed:', id, e);
+      });
     }
   }
 
@@ -394,7 +396,7 @@
           if (currentDetailId === id && r && r.ok && r.data && r.data.status === 'ok') {
             renderDetailMetrics(r.data);
           }
-        }).catch(function() {});
+        }).catch(function() {}); // 失败由 2s 轮询兜底刷新，无需提示
       }
     } else {
       metricsSection.style.display = 'none';
