@@ -13,7 +13,9 @@
   var modelSelect = $('chatModelSelect');
   var chatHistory = $('chatHistory');
 
-  var isTyping = false;
+  var isTyping = false;        // 智能对话流式输出中
+  var isGenImage = false;       // 图片生成中
+  var isTranslating = false;    // 翻译中
   var convIdCounter = 0;
   var systemPromptVisible = false;
 
@@ -387,19 +389,21 @@
   /* ---- 图片生成 ---- */
   $('imageGenBtn').addEventListener('click', function() {
     var prompt = $('imagePrompt').value.trim();
-    if (!prompt || isTyping) return;
+    if (!prompt || isGenImage) return;
     var area = $('imagePreviewArea');
     area.innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">⏳</span><span class="image-preview-placeholder-text">正在生成图片…</span></div>';
 
     // 尝试调用运行中的 FLUX 模型
     if (window.chatService && window.chatService.generateImage) {
+      isGenImage = true;
       window.chatService.generateImage(prompt, function(b64) {
         if (b64) {
           area.innerHTML = '<img src="data:image/png;base64,' + b64 + '" alt="' + escapeHtml(prompt) + '">';
         }
       }).then(function() {
-        // done
+        isGenImage = false;
       }).catch(function(e) {
+        isGenImage = false;
         // 模型未运行或生成失败 → 显示占位符
         area.innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">🎨</span><span class="image-preview-placeholder-text">「' + escapeHtml(prompt) + '」<br><span style="font-size:12px;color:var(--text-muted)">' + escapeHtml(e.message || '请先启动 FLUX 模型') + '</span></span></div>';
       });
@@ -450,7 +454,7 @@
 
   $('translateBtn').addEventListener('click', function() {
     var text = $('translateSrcText').value.trim();
-    if (!text || isTyping) return;
+    if (!text || isTranslating) return;
     var src = $('translateSrc').value;
     var dst = $('translateDst').value;
     var output = $('translateOutput');
@@ -481,7 +485,7 @@
       }
     }
 
-    isTyping = true;
+    isTranslating = true;
     output.innerHTML = '<span style="color:var(--text-muted)">⏳ 翻译中…</span>';
 
     // 添加 source 语言信息到 prompt（非 auto 时）
@@ -501,10 +505,10 @@
       output.innerHTML = escapeHtml(fullText);
     }, modelId).then(function() {
       // 流结束：重置标志位（chatService 完成时 resolve，不发 __DONE__ token）
-      isTyping = false;
+      isTranslating = false;
       if (!fullText) output.innerHTML = '<span style="color:var(--text-muted)">（无输出）</span>';
     }).catch(function(e) {
-      isTyping = false;
+      isTranslating = false;
       output.innerHTML = '<span style="color:var(--warn-color)">翻译失败: ' + escapeHtml(String(e)) + '</span>';
     });
   });

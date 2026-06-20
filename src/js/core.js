@@ -53,9 +53,27 @@ window.AppState = {
 // ================================================================
 window.AppBus = (function() {
   var target = new EventTarget();
+  // 保存原始 handler → 包装 handler 的映射，支持 off() 取消订阅
+  var wrappers = new WeakMap();
   return {
     on: function(type, handler) {
-      target.addEventListener(type, function(e) { handler(e.detail); });
+      // 包装：捕获 handler 异常，避免单个订阅者出错导致事件系统崩溃
+      var wrapped = function(e) {
+        try {
+          handler(e.detail);
+        } catch (err) {
+          console.error('[AppBus] handler error for "' + type + '":', err);
+        }
+      };
+      wrappers.set(handler, wrapped);
+      target.addEventListener(type, wrapped);
+    },
+    off: function(type, handler) {
+      var wrapped = wrappers.get(handler);
+      if (wrapped) {
+        target.removeEventListener(type, wrapped);
+        wrappers.delete(handler);
+      }
     },
     emit: function(type, detail) {
       target.dispatchEvent(new CustomEvent(type, { detail: detail || {} }));
