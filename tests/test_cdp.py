@@ -1033,6 +1033,38 @@ async def run_cdp_tests():
         check("AppBus isolates handler errors (later handler still runs)",
               er.get("reached") is True and er.get("emitThrew") is False, f"got {val}")
 
+        # model:started / model:stopped 事件应同步更新 AppState.models[].status
+        # （回归：models.js 监听这两个事件直接改状态，避免 models:changed 从 config.json 读到旧状态）
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                var models = window.AppState.models || [];
+                // 注入一个假模型用于测试事件同步，结束后移除
+                var fakeId = '__evt_test_model__';
+                models.push({id: fakeId, name: 'EvtTest', status: 'downloaded'});
+                var find = function(){ return (window.AppState.models||[]).find(function(m){return m.id===fakeId;}); };
+
+                window.AppBus.emit('model:started', {id: fakeId, port: 9999});
+                var afterStart = find() ? find().status : 'gone';
+                var portAfterStart = find() ? find().port : null;
+
+                window.AppBus.emit('model:stopped', {id: fakeId});
+                var afterStop = find() ? find().status : 'gone';
+
+                // 清理假模型
+                var idx = window.AppState.models.indexOf(find());
+                if (idx >= 0) window.AppState.models.splice(idx, 1);
+                // 复位选择器：再 emit 一次 model:stopped，chat.js 订阅会重建下拉
+                window.AppBus.emit('model:stopped', {id: fakeId});
+
+                return JSON.stringify({afterStart: afterStart, portAfterStart: portAfterStart, afterStop: afterStop});
+            })()
+        """)
+        ev = json.loads(val)
+        check("model:started event sets model status=running",
+              ev.get("afterStart") == "running" and ev.get("portAfterStart") == 9999, f"got {val}")
+        check("model:stopped event sets model status=downloaded",
+              ev.get("afterStop") == "downloaded", f"got {val}")
+
         # ========== 独立 typing 标志（对话/图片/翻译互不阻塞）==========
         # 三个功能各自有独立的输入框/按钮，验证 DOM 上确实是分离的入口
         cid, val = await evaluate(ws, cid, """
