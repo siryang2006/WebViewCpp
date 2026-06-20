@@ -778,6 +778,28 @@ async def run_cdp_tests():
         print(f"  DIAG: model statuses = {val}")
         check("models have status field", val and 'status' in val, f"got {val}")
 
+        # FLUX 文生图模型配置校验：schnell（文生图）应存在，且 download_url 指向 ModelScope gpustack 仓库
+        cid, val = await evaluate(ws, cid, """
+            JSON.stringify((window.AppState.models||[]).filter(function(m){
+                return m.id.indexOf('FLUX')>=0;
+            }).map(function(m){
+                return {id:m.id, type:m.type, url:m.download_url, gguf:m.gguf_path};
+            }))
+        """, await_promise=True, timeout_ms=3000)
+        flux_models = json.loads(val)
+        print(f"  DIAG: FLUX models = {val}")
+        schnell = next((m for m in flux_models if m["id"] == "FLUX.1-schnell"), None)
+        check("FLUX.1-schnell text-to-image model present",
+              schnell is not None, f"got {[m['id'] for m in flux_models]}")
+        if schnell:
+            check("FLUX.1-schnell uses gpustack GGUF source",
+                  "gpustack/FLUX.1-schnell-GGUF" in schnell.get("url", "")
+                  and schnell.get("url", "").endswith(".gguf"),
+                  f"got {schnell.get('url')}")
+            check("FLUX.1-schnell gguf path under downloads/",
+                  schnell.get("gguf", "").startswith("downloads/FLUX.1-schnell/"),
+                  f"got {schnell.get('gguf')}")
+
         # Cancel any active download to clean up
         await evaluate(ws, cid, """
             window.__cpp__.download.cancelDownload({modelId: 'dolphin-gemma2-2b'}).catch(function(){});

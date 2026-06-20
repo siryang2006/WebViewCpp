@@ -71,6 +71,18 @@
       "ctx": "N/A",
       "download_url": "https://modelscope.cn/models/gpustack/FLUX.1-Fill-dev-GGUF/resolve/master/FLUX.1-Fill-dev-pure-Q4_0.gguf",
       "gguf_path": "downloads/FLUX.1-Fill-dev/FLUX.1-Fill-dev-pure-Q4_0.gguf"
+    },
+    {
+      "id": "FLUX.1-schnell",
+      "name": "FLUX.1 schnell",
+      "desc": "Black Forest Labs FLUX schnell，12B 文生图模型，纯 Q4_0 量化，1-4 步快速生成（需 llama-box 运行）",
+      "size": "10.0 GB",
+      "size_bytes": 10042123264,
+      "type": "FLUX-schnell",
+      "param": 12,
+      "ctx": "N/A",
+      "download_url": "https://modelscope.cn/models/gpustack/FLUX.1-schnell-GGUF/resolve/master/FLUX.1-schnell-pure-Q4_0.gguf",
+      "gguf_path": "downloads/FLUX.1-schnell/FLUX.1-schnell-pure-Q4_0.gguf"
     }
   ]
 }
