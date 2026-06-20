@@ -68,6 +68,10 @@ class DownloadService {
     getSpeed(modelId) {
         return window.__cpp__.download.getSpeed({ modelId: modelId });
     }
+
+    getFileSize(url) {
+        return window.__cpp__.download.getFileSize(url);
+    }
 }
 
 window.downloadService = new DownloadService();

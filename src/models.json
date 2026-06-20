@@ -10,7 +10,8 @@
       "param": 2,
       "ctx": "8K",
       "download_url": "https://modelscope.cn/models/WDQW123/dolphin-2.9.4-gemma2-2b-Q4_K_M-GGUF/resolve/master/dolphin-2.9.4-gemma2-2b-q4_k_m.gguf",
-      "gguf_path": "downloads/dolphin-gemma2-2b/dolphin-2.9.4-gemma2-2b-q4_k_m.gguf"
+      "gguf_path": "downloads/dolphin-gemma2-2b/dolphin-2.9.4-gemma2-2b-q4_k_m.gguf",
+      "backend": "llama-server"
     },
     {
       "id": "qwen-2.5-7b",
@@ -22,7 +23,8 @@
       "param": 7,
       "ctx": "32K",
       "download_url": "https://modelscope.cn/models/qwen/Qwen2.5-7B-Instruct-GGUF/resolve/master/qwen2.5-7b-instruct-q4_k_m.gguf",
-      "gguf_path": "downloads/qwen-2.5-7b/qwen2.5-7b-instruct-q4_k_m.gguf"
+      "gguf_path": "downloads/qwen-2.5-7b/qwen2.5-7b-instruct-q4_k_m.gguf",
+      "backend": "llama-server"
     },
     {
       "id": "qwen-2.5-1.5b",
@@ -34,7 +36,8 @@
       "param": 1.5,
       "ctx": "32K",
       "download_url": "https://modelscope.cn/models/qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/master/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-      "gguf_path": "downloads/qwen-2.5-1.5b/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+      "gguf_path": "downloads/qwen-2.5-1.5b/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "backend": "llama-server"
     },
     {
       "id": "llama-3.2-1b",
@@ -46,7 +49,8 @@
       "param": 1,
       "ctx": "8K",
       "download_url": "https://modelscope.cn/models/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/master/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-      "gguf_path": "downloads/llama-3.2-1b/Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+      "gguf_path": "downloads/llama-3.2-1b/Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+      "backend": "llama-server"
     },
     {
       "id": "HY-MT2-1.7B",
@@ -58,31 +62,48 @@
       "param": 1.8,
       "ctx": "8K",
       "download_url": "https://modelscope.cn/models/Tencent-Hunyuan/Hy-MT2-1.8B-GGUF/resolve/master/Hy-MT2-1.8B-Q4_K_M.gguf",
-      "gguf_path": "downloads/HY-MT2-1.7B/Hy-MT2-1.8B-Q4_K_M.gguf"
+      "gguf_path": "downloads/HY-MT2-1.7B/Hy-MT2-1.8B-Q4_K_M.gguf",
+      "backend": "llama-server"
+    },
+
+    {
+      "id": "FLUX.1-mini",
+      "name": "FLUX.1 mini",
+      "desc": "腾讯 ARC Lab FLUX.1-mini，3.2B 文本高效蒸馏文生图模型，Q4_0 量化（需 llama-box v0.0.86+ 运行）",
+      "size": "5.35 GB",
+      "size_bytes": 5744560000,
+      "type": "FLUX-mini",
+      "param": 3.2,
+      "ctx": "N/A",
+      "download_url": "https://modelscope.cn/models/gpustack/FLUX.1-mini-GGUF/resolve/master/FLUX.1-mini-Q4_0.gguf",
+      "gguf_path": "downloads/FLUX.1-mini/FLUX.1-mini-Q4_0.gguf",
+      "backend": "llama-box"
     },
     {
-      "id": "FLUX.1-Fill-dev",
-      "name": "FLUX.1 Fill dev",
-      "desc": "Black Forest Labs FLUX Fill，12B 参数纯 Q4_0 量化图片填充/生成模型（需 llama-box 运行）",
-      "size": "9.4 GB",
-      "size_bytes": 10086974816,
-      "type": "FLUX-Fill",
-      "param": 12,
+      "id": "sdxl-base-1.0",
+      "name": "SDXL base 1.0",
+      "desc": "Stability AI SDXL base 1.0，3.5B 文生图模型，Q4_0 量化，成熟稳定（需 llama-box 运行）",
+      "size": "3.94 GB",
+      "size_bytes": 4230000000,
+      "type": "SDXL",
+      "param": 3.5,
       "ctx": "N/A",
-      "download_url": "https://modelscope.cn/models/gpustack/FLUX.1-Fill-dev-GGUF/resolve/master/FLUX.1-Fill-dev-pure-Q4_0.gguf",
-      "gguf_path": "downloads/FLUX.1-Fill-dev/FLUX.1-Fill-dev-pure-Q4_0.gguf"
+      "download_url": "https://modelscope.cn/models/gpustack/stable-diffusion-xl-base-1.0-GGUF/resolve/master/stable-diffusion-xl-base-1.0-Q4_0.gguf",
+      "gguf_path": "downloads/sdxl-base-1.0/stable-diffusion-xl-base-1.0-Q4_0.gguf",
+      "backend": "llama-box"
     },
     {
-      "id": "FLUX.1-schnell",
-      "name": "FLUX.1 schnell",
-      "desc": "Black Forest Labs FLUX schnell，12B 文生图模型，纯 Q4_0 量化，1-4 步快速生成（需 llama-box 运行）",
-      "size": "10.0 GB",
-      "size_bytes": 10042123264,
-      "type": "FLUX-schnell",
-      "param": 12,
+      "id": "sd-3.5-medium",
+      "name": "SD 3.5 Medium",
+      "desc": "Stability AI SD 3.5 Medium，8B MMDiT 文生图模型，Q4_0 量化，质量出色（需 llama-box 运行）",
+      "size": "5.29 GB",
+      "size_bytes": 5680000000,
+      "type": "SD3.5",
+      "param": 8,
       "ctx": "N/A",
-      "download_url": "https://modelscope.cn/models/gpustack/FLUX.1-schnell-GGUF/resolve/master/FLUX.1-schnell-pure-Q4_0.gguf",
-      "gguf_path": "downloads/FLUX.1-schnell/FLUX.1-schnell-pure-Q4_0.gguf"
+      "download_url": "https://modelscope.cn/models/gpustack/stable-diffusion-v3-5-medium-GGUF/resolve/master/stable-diffusion-v3-5-medium-Q4_0.gguf",
+      "gguf_path": "downloads/sd-3.5-medium/stable-diffusion-v3-5-medium-Q4_0.gguf",
+      "backend": "llama-box"
     }
   ]
 }

@@ -31,12 +31,14 @@ public:
     json cancelDownload(const json& args);
     json getProgress(const json& args);
     json getSpeed(const json& args);
+    json getFileSize(const json& args);
 
 private:
     struct DownloadTask {
         std::string modelId;
         std::string url;
         std::string savePath;
+        std::string tempPath;
         std::string callbackFn;
         long long totalSize = 0;
         std::atomic<long long> downloaded{0};

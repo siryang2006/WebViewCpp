@@ -22,20 +22,32 @@
 
     $('configModelName').textContent = m.name;
 
-    // 上下文长度默认取模型 ctx 对应档位
-    var ctxIdx = CTX_STEPS.indexOf(parseCtxToTokens(m.ctx));
-    if (ctxIdx < 0) ctxIdx = 2; // 8192
-    $('configCtxSlider').value = ctxIdx;
-    $('configCtx').textContent = CTX_STEPS[ctxIdx];
+    var isBox = m.backend === 'llama-box';
 
-    $('configNglSlider').value = -1;
-    $('configNgl').textContent = '全部';
+    // 显示/隐藏后端相关参数行
+    $('configRowCtx').style.display = isBox ? 'none' : '';
+    $('configRowNgl').style.display = isBox ? 'none' : '';
+    $('configRowFlash').style.display = isBox ? 'none' : '';
+    $('configRowThinking').style.display = isBox ? 'none' : '';
 
-    $('configThreadsSlider').value = 4;
-    $('configThreads').textContent = '4';
+    if (!isBox) {
+      var ctxIdx = CTX_STEPS.indexOf(parseCtxToTokens(m.ctx));
+      if (ctxIdx < 0) ctxIdx = 2; // 8192
+      $('configCtxSlider').value = ctxIdx;
+      $('configCtx').textContent = CTX_STEPS[ctxIdx];
 
-    $('configFlashAttn').className = 'config-toggle on';
-    $('configThinking').className = 'config-toggle';
+      $('configNglSlider').value = -1;
+      $('configNgl').textContent = '全部';
+
+      $('configThreadsSlider').value = 4;
+      $('configThreads').textContent = '4';
+
+      $('configFlashAttn').className = 'config-toggle on';
+      $('configThinking').className = 'config-toggle';
+    } else {
+      $('configThreadsSlider').value = 4;
+      $('configThreads').textContent = '4';
+    }
 
     updateCmdPreview();
     $('configOverlay').classList.add('show');
@@ -44,14 +56,13 @@
   function getConfigParams() {
     var ctxIdx = parseInt($('configCtxSlider').value);
     var m = findModel(configModelId);
-    var isFlux = m && m.type === 'FLUX-Fill';
     return {
       ctx: CTX_STEPS[ctxIdx],
       ngl: parseInt($('configNglSlider').value),
       threads: parseInt($('configThreadsSlider').value),
       flashAttn: configFlashAttn,
       thinking: configThinking,
-      backend: isFlux ? 'llama-box' : 'llama-server'
+      backend: (m && m.backend) || 'llama-server'
     };
   }
 
@@ -59,9 +70,8 @@
   function updateCmdPreview() {
     var p = getConfigParams();
     var m = findModel(configModelId);
-    var isFlux = m && m.type === 'FLUX-Fill';
     var parts;
-    if (isFlux) {
+    if (m && m.backend === 'llama-box') {
       parts = ['llama-box', '-m <model>', '--images', '--host 127.0.0.1'];
     } else {
       parts = ['llama-server', '-m <model>', '-c ' + p.ctx, '-ngl ' + p.ngl, '-t ' + p.threads];

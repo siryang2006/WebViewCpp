@@ -25,7 +25,6 @@ var IMPLEMENTED_FEATURES = ['chat', 'translate', 'image'];
 function switchFeature(feature) {
   var panels = document.querySelectorAll('.input-panel');
   var implemented = IMPLEMENTED_FEATURES.indexOf(feature) >= 0;
-  // 未实现的功能 → 显示"开发中"面板，并填入卡片名称
   var targetFeature = implemented ? feature : '__coming_soon__';
   if (!implemented) {
     var card = document.querySelector('.feature-card[data-feature="' + feature + '"]');
@@ -39,6 +38,16 @@ function switchFeature(feature) {
   document.querySelectorAll('.feature-card').forEach(function(c) {
     c.classList.toggle('active', c.dataset.feature === feature);
   });
+
+  // 仅智能对话显示对话区
+  var ca = $('chatArea');
+  if (ca) {
+    if (feature === 'chat') {
+      ca.style.display = ca.children.length > 0 ? 'flex' : 'none';
+    } else {
+      ca.style.display = 'none';
+    }
+  }
 }
 
 document.querySelectorAll('.feature-card').forEach(function(card) {
@@ -49,15 +58,6 @@ document.querySelectorAll('.feature-card').forEach(function(card) {
 
 $('cardsPrev').addEventListener('click', function() { $('cardsTrack').scrollBy({ left: -200, behavior: 'smooth' }); });
 $('cardsNext').addEventListener('click', function() { $('cardsTrack').scrollBy({ left: 200, behavior: 'smooth' }); });
-
-/* ---- 推荐问题 ---- */
-document.querySelectorAll('.chip').forEach(function(chip) {
-  chip.addEventListener('click', function() {
-    $('inputBox').value = chip.dataset.q;
-    $('inputBox').dispatchEvent(new Event('input'));
-    $('inputBox').focus();
-  });
-});
 
 /* ---- 模式选择 ---- */
 document.querySelectorAll('.mode-btn').forEach(function(btn) {
@@ -77,6 +77,7 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
       $('modelPage').classList.add('active');
       document.querySelector('.feature-cards-section').style.display = 'none';
       document.querySelector('.content-area').style.display = 'none';
+      if (window.renderModels) window.renderModels();
     } else {
       $('modelPage').classList.remove('active');
       document.querySelector('.feature-cards-section').style.display = '';

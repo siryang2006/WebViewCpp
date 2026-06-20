@@ -108,6 +108,8 @@ tests/
 | nvidia-smi detection race | Protect static variables with mutex for thread-safe one-time init |
 | curl error messages | Use `curl_easy_strerror()` for human-readable error output |
 | llama-box FLUX warmup timeout | Pass `--no-warmup` to llama-box: CPU warmup of diffusion models (one full empty run) is extremely slow and trips the health-check timeout before the server is actually ready |
+| MSVC stat for >4GB files | Use `struct _stat64` + `_stat64()` instead of `struct stat` + `stat()` — MSVC's `struct stat` can fail for files >4GB on some CRT configurations. `_stat64` always uses 64-bit `st_size`. Affects `ConfigService` (file existence detection) and `DownloadService` (resume offset) |
+| size_bytes auto-sync from actual file | `ConfigService::read()` updates `size_bytes` from `st.st_size` when file exists on disk. `DownloadService::getFileSize(url)` does a HEAD request to get Content-Length; JS calls it in `startDownload()` before starting the actual download, so progress bar uses the real remote file size |
 
 ## Conventions
 

@@ -31,8 +31,11 @@ ChatService::ChatService() {
         return getStatus(args);
     });
 
-    bind_sync("getMetrics", [this](const json& args) -> json {
-        return getMetrics(args);
+    bind_async("getMetrics", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
+        wv->dispatch_task([id, args, this, wv]() {
+            json result = getMetrics(args);
+            wv->resolve(id, result);
+        });
     });
 
     bind_async("generateImage", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
@@ -253,6 +256,9 @@ void ChatService::generateImage(const std::string& id, const json& args, WebView
     std::string prompt = p.value("prompt", "");
     std::string callback = p.value("callback", "");
     std::string model_id = p.value("modelId", "");
+    // 尺寸/步数可配置：FLUX schnell 1-4 步即可；小显存（如 8GB）建议用 512x512 避免 OOM。
+    std::string size = p.value("size", "512x512");
+    int steps = p.value("steps", 4);
 
     if (prompt.empty()) {
         wv->resolve(id, CppObject::error_result(ErrorCode::INVALID_ARGUMENTS, "prompt is required"));
@@ -286,11 +292,12 @@ void ChatService::generateImage(const std::string& id, const json& args, WebView
     }
 
     json body = {
-        {"model", "flux-fill"},
+        {"model", "flux-schnell"},
         {"prompt", prompt},
         {"n", 1},
         {"response_format", "b64_json"},
-        {"size", "1024x1024"}
+        {"size", size},
+        {"sample_steps", steps}
     };
     std::string body_str = body.dump();
     std::string url = "http://127.0.0.1:" + std::to_string(port) + "/v1/images/generations";
@@ -311,7 +318,7 @@ void ChatService::generateImage(const std::string& id, const json& args, WebView
         return size * nmemb;
     });
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_str);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 120000L); // 图片生成可能较慢
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 300000L); // 图片生成可能较慢（首次含 CUDA kernel JIT，给 5 分钟）
 
     CURLcode res = curl_easy_perform(curl);
     curl_slist_free_all(headers);
@@ -550,8 +557,13 @@ bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& p
         // 跳过 warmup：CPU 上 FLUX 等扩散模型的 warmup（一次完整空跑）极慢，
         // 会导致健康检查在模型其实已就绪前就超时。跳过后服务能在加载完成后立即监听。
         args << " --no-warmup";
-        // GPU 层数透传（有 NVIDIA GPU 时大幅加速扩散；-1 表示全部卸载到 GPU）
-        if (params.n_gpu_layers != 0) args << " -ngl " << params.n_gpu_layers;
+        // GPU 层数：n_gpu_layers<0 约定为"全部卸载到 GPU"。llama-box/sd 对扩散模型
+        // 需要一个足够大的正数表示全部上 GPU（-1 会被当作 0/不卸载，导致回落 CPU 极慢）。
+        if (params.n_gpu_layers < 0) {
+            args << " -ngl 999";
+        } else if (params.n_gpu_layers > 0) {
+            args << " -ngl " << params.n_gpu_layers;
+        }
     } else {
         args << "-m \"" << model_arg << "\"";
         args << " -c " << params.ctx;

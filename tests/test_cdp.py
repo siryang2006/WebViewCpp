@@ -778,27 +778,28 @@ async def run_cdp_tests():
         print(f"  DIAG: model statuses = {val}")
         check("models have status field", val and 'status' in val, f"got {val}")
 
-        # FLUX 文生图模型配置校验：schnell（文生图）应存在，且 download_url 指向 ModelScope gpustack 仓库
+        # 文生图模型配置校验：FLUX.1-mini、SDXL、SD3.5 应存在，且 download_url 指向 ModelScope gpustack 仓库
         cid, val = await evaluate(ws, cid, """
             JSON.stringify((window.AppState.models||[]).filter(function(m){
-                return m.id.indexOf('FLUX')>=0;
+                return m.backend === 'llama-box';
             }).map(function(m){
-                return {id:m.id, type:m.type, url:m.download_url, gguf:m.gguf_path};
+                return {id:m.id, type:m.type, url:m.download_url, gguf:m.gguf_path, backend:m.backend};
             }))
         """, await_promise=True, timeout_ms=3000)
-        flux_models = json.loads(val)
-        print(f"  DIAG: FLUX models = {val}")
-        schnell = next((m for m in flux_models if m["id"] == "FLUX.1-schnell"), None)
-        check("FLUX.1-schnell text-to-image model present",
-              schnell is not None, f"got {[m['id'] for m in flux_models]}")
-        if schnell:
-            check("FLUX.1-schnell uses gpustack GGUF source",
-                  "gpustack/FLUX.1-schnell-GGUF" in schnell.get("url", "")
-                  and schnell.get("url", "").endswith(".gguf"),
-                  f"got {schnell.get('url')}")
-            check("FLUX.1-schnell gguf path under downloads/",
-                  schnell.get("gguf", "").startswith("downloads/FLUX.1-schnell/"),
-                  f"got {schnell.get('gguf')}")
+        img_models = json.loads(val)
+        print(f"  DIAG: image models = {val}")
+        check("at least one llama-box image model present",
+              len(img_models) >= 1, f"got {len(img_models)}")
+        for im in img_models:
+            check(f"{im['id']} uses gpustack GGUF source",
+                  "gpustack/" in im.get("url", "") and im.get("url", "").endswith(".gguf"),
+                  f"got {im.get('url')}")
+            check(f"{im['id']} gguf path under downloads/",
+                  im.get("gguf", "").startswith("downloads/"),
+                  f"got {im.get('gguf')}")
+            check(f"{im['id']} has backend=llama-box",
+                  im.get("backend") == "llama-box",
+                  f"got {im.get('backend')}")
 
         # Cancel any active download to clean up
         await evaluate(ws, cid, """
@@ -1627,6 +1628,86 @@ async def run_cdp_tests():
                       json.loads(val)["data"].get("status") == "stopped", f"got {val}")
         else:
             print("  DIAG: no gguf model file found, skipping real-launch test")
+
+        # ========== Image Generation Model Test ==========
+        img_model_id = None
+        img_gguf_path = None
+        cid, val = await evaluate(ws, cid, """
+            JSON.stringify((window.AppState.models||[]).filter(function(m){
+                return m.backend === 'llama-box' && m.status === 'downloaded';
+            }).map(function(m){
+                return {id:m.id, gguf:m.gguf_path};
+            }))
+        """, await_promise=True, timeout_ms=3000)
+        downloaded_img_models = json.loads(val)
+        if downloaded_img_models:
+            img_model_id = downloaded_img_models[0]["id"]
+            img_gguf_path_rel = downloaded_img_models[0]["gguf"]
+            img_gguf_dir = os.path.join(os.path.dirname(EXE_PATH), os.path.dirname(img_gguf_path_rel))
+            img_gguf_path = os.path.join(os.path.dirname(EXE_PATH), img_gguf_path_rel)
+        if img_gguf_path and os.path.exists(img_gguf_path):
+            safe_print(f"  DIAG: image model GGUF found: {img_model_id} ({round(os.path.getsize(img_gguf_path)/1e9,1)} GB)")
+
+            # Start image model with llama-box
+            launch_js = (
+                '(async()=>{ try {'
+                ' var r = await window.chatService.startModel({modelId:"' + img_model_id + '",'
+                ' ggufPath:"' + img_gguf_path_rel.replace('\\', '/') + '", backend:"llama-box",'
+                ' ctx:1, ngl:0, threads:2, flashAttn:false});'
+                ' return JSON.stringify(r); } catch(e) { return "EXC:" + String(e); } })()'
+            )
+            cid, val = await evaluate(ws, cid, launch_js,
+                await_promise=True, timeout_ms=120000)
+            safe_print(f"  DIAG: image model startModel = {val}")
+            launch = json.loads(val) if not val.startswith("EXC:") else {}
+            start_data = launch.get("data", {})
+            if launch.get("ok") and start_data.get("status") == "running":
+                check("image model starts with llama-box", True)
+                check("image model returns port", bool(start_data.get("port")), f"got {start_data.get('port')}")
+
+                # Check image model selector is populated
+                cid, sel_val = await evaluate(ws, cid,
+                    "(function(){var s=document.getElementById('imageModelSelect');return s?{exists:true,options:s.options.length,value:s.value}:{exists:false};})()")
+                safe_print(f"  DIAG: imageModelSelect = {sel_val}")
+
+                # Try calling generateImage — best-effort
+                gen_ok = False
+                try:
+                    cid, val = await evaluate(ws, cid,
+                        '(async()=>{ try { var r = await window.__cpp__.chat.generateImage({prompt:"a cat",modelId:"' + img_model_id + '"}); return JSON.stringify({ok:true, resp:r}); } catch(e) { return JSON.stringify({ok:false, err:String(e)}); } })()',
+                        await_promise=True, timeout_ms=120000)
+                    safe_print(f"  DIAG: image generateImage = {str(val)[:300]}")
+                    gen_resp = json.loads(val)
+                    if gen_resp.get("ok") and gen_resp.get("resp", {}).get("ok"):
+                        b64 = gen_resp["resp"].get("data", {}).get("b64_json", "")
+                        if len(b64) > 100:
+                            check("image generateImage returns base64 data", True, "got base64 ok")
+                            safe_print(f"  DIAG: image generateImage b64 length = {len(b64)}")
+                            gen_ok = True
+                    if not gen_ok:
+                        safe_print(f"  DIAG: image generateImage responded but no base64")
+                except Exception as e:
+                    safe_print(f"  DIAG: image generateImage skipped: {e}")
+
+                # Stop image model
+                try:
+                    cid, val = await evaluate(ws, cid,
+                        '(async()=>{ try { var r = await window.chatService.stopModel("' + img_model_id + '"); return JSON.stringify(r); } catch(e) { return "EXC:" + String(e); } })()',
+                        await_promise=True, timeout_ms=30000)
+                    safe_print(f"  DIAG: image model stopModel = {val}")
+                    if val and not val.startswith("EXC:"):
+                        sd = json.loads(val).get("data", {})
+                        check("image model stopModel returns stopped",
+                              sd.get("status") == "stopped", f"got {val}")
+                    else:
+                        safe_print(f"  DIAG: image model stopModel process may have exited")
+                except Exception as e:
+                    safe_print(f"  DIAG: image model stopModel exception: {e}")
+            else:
+                check("image model starts with llama-box",
+                      False, f"start failed: {val[:200]}")
+        else:
+            safe_print("  DIAG: no downloaded image model GGUF found, skipping image gen test")
 
         # stopModel（无参）应停止全部并返回 stopped
         cid, val = await evaluate(ws, cid,

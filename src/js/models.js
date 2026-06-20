@@ -14,12 +14,6 @@
   // 筛选状态
   var filterState = { param: 'all', type: 'all' };
 
-  function typeLabelOf(type) {
-    return type.includes('Gemma') ? 'Gemma'
-         : type.includes('Qwen') ? 'Qwen'
-         : type.includes('Llama') ? 'Llama' : type;
-  }
-
   // 把内存(MB)格式化为 MB/GB
   function fmtMem(mb) {
     if (!mb) return '0 MB';
@@ -42,13 +36,6 @@
     var q = modelSearchInput.value.trim().toLowerCase();
     var filtered = models.filter(function(m) {
       if (q && !m.name.toLowerCase().includes(q) && !m.desc.toLowerCase().includes(q)) return false;
-      if (filterState.param === 'small' && m.param > 10) return false;
-      if (filterState.param === 'medium' && (m.param <= 10 || m.param > 30)) return false;
-      if (filterState.param === 'large' && m.param <= 30) return false;
-      if (filterState.type === 'gemma' && !m.type.includes('Gemma')) return false;
-      if (filterState.type === 'qwen' && !m.type.includes('Qwen')) return false;
-      if (filterState.type === 'llama' && !m.type.includes('Llama')) return false;
-      if (filterState.type === 'other' && ['Gemma', 'Qwen', 'Llama'].some(function(t) { return m.type.includes(t); })) return false;
       return true;
     });
 
@@ -63,12 +50,10 @@
       var isDownloading = m.status === 'downloading';
       // 没有status字段或status为'available'表示可以下载
       var isAvailable = !m.status || m.status === 'available';
-      var typeLabel = typeLabelOf(m.type);
       // 转义用户可控字段（名称/描述/大小/类型来自「添加模型」表单，可能含 < ' " 等）。
       var name = escapeHtml(m.name);
       var desc = escapeHtml(m.desc);
       var size = escapeHtml(m.size);
-      var tl = escapeHtml(typeLabel);
       var idA = escapeHtml(m.id);                       // 用于 HTML 属性（id="..."）
       var idJs = escapeHtml(m.id).replace(/'/g, "\\'");  // 用于 onclick 单引号字符串
       return '<div class="model-row ' + (isRunning ? 'selected' : '') + '">' +
@@ -79,7 +64,6 @@
           '<div class="model-row-meta">' + desc + '</div>' +
           '<div class="model-row-tags">' +
             '<span class="model-row-tag gb">' + size + '</span>' +
-            '<span class="model-row-tag type">' + tl + '</span>' +
           '</div>' +
           (isRunning && m.metrics ?
             '<div class="model-row-metrics" id="rowmetrics-' + idA + '">' + formatRowMetrics(m.metrics) + '</div>' : '') +
@@ -119,33 +103,39 @@
     var m = findModel(id);
     if (!m || !m.download_url) return;
 
-    m.status = 'downloading';
-    m.progress = 0;
-    m.downloaded = 0;
-    m.speed = 0;
-    renderModels();
-
-    dl.startDownload({
-      url: m.download_url,
-      savePath: m.gguf_path || 'downloads/' + id + '/' + m.download_url.split('/').pop(),
-      modelId: id,
-      totalSize: m.size_bytes || 0
-    }, function(data) {
-      m.progress = data.percentage || 0;
-      m.downloaded = data.downloaded || 0;
-      m.total = data.total || 0;
-      m.speed = data.speed || 0;
-
-      if (data.status === 'completed') {
-        m.status = 'downloaded';
-        m.progress = 100;
-      } else if ((data.status === 'cancelled' || data.status === 'error') && !m._pausing) {
-        m.status = 'available';
-        m.progress = 0;
-        m.downloaded = 0;
-        m.speed = 0;
+    dl.getFileSize(m.download_url).then(function(r) {
+      if (r && r.ok && r.data && r.data.size > 0) {
+        m.size_bytes = r.data.size;
       }
+    }).catch(function() {}).then(function() {
+      m.status = 'downloading';
+      m.progress = 0;
+      m.downloaded = 0;
+      m.speed = 0;
       renderModels();
+
+      dl.startDownload({
+        url: m.download_url,
+        savePath: m.gguf_path || 'downloads/' + id + '/' + m.download_url.split('/').pop(),
+        modelId: id,
+        totalSize: m.size_bytes || 0
+      }, function(data) {
+        m.progress = data.percentage || 0;
+        m.downloaded = data.downloaded || 0;
+        m.total = data.total || 0;
+        m.speed = data.speed || 0;
+
+        if (data.status === 'completed') {
+          m.status = 'downloaded';
+          m.progress = 100;
+        } else if ((data.status === 'cancelled' || data.status === 'error') && !m._pausing) {
+          m.status = 'available';
+          m.progress = 0;
+          m.downloaded = 0;
+          m.speed = 0;
+        }
+        renderModels();
+      });
     });
   }
 
@@ -221,6 +211,7 @@
     $('addModelParam').value = '';
     $('addModelType').value = 'Other';
     $('addModelCtx').value = '32K';
+    $('addModelBackend').value = 'llama-server';
     $('addModelOverlay').classList.add('show');
   }
 
@@ -240,6 +231,7 @@
     $('addModelParam').value = m.param || '';
     $('addModelType').value = m.type || 'Other';
     $('addModelCtx').value = m.ctx || '32K';
+    $('addModelBackend').value = m.backend || 'llama-server';
     $('addModelOverlay').classList.add('show');
   }
 
@@ -262,7 +254,8 @@
         size_bytes: parseInt($('addModelSizeBytes').value) || 0,
         param: parseFloat($('addModelParam').value) || 0,
         type: $('addModelType').value,
-        ctx: $('addModelCtx').value
+        ctx: $('addModelCtx').value,
+        backend: $('addModelBackend').value
       };
       window.__cpp__.config.updateModel(updates).then(function(data) {
         $('addModelOverlay').classList.remove('show');
@@ -289,7 +282,8 @@
         size_bytes: parseInt($('addModelSizeBytes').value) || 0,
         param: parseFloat($('addModelParam').value) || 0,
         type: $('addModelType').value,
-        ctx: $('addModelCtx').value
+        ctx: $('addModelCtx').value,
+        backend: $('addModelBackend').value
       };
       window.__cpp__.config.addModel(model).then(function(data) {
         $('addModelOverlay').classList.remove('show');
@@ -353,7 +347,6 @@
     var isRunning = m.status === 'running';
     var isDownloaded = m.status === 'downloaded';
     var isDownloading = m.status === 'downloading';
-    var typeLabel = typeLabelOf(m.type);
 
     $('detailTitle').textContent = m.name;
     $('detailName').textContent = m.name;
@@ -362,6 +355,7 @@
     $('detailSize').textContent = m.size;
     $('detailType').textContent = m.type;
     $('detailCtx').textContent = m.ctx || '8K';
+    $('detailBackend').textContent = m.backend || 'llama-server';
 
     var heroIcon = $('detailHeroIcon');
     heroIcon.textContent = isRunning ? '🚀' : isDownloaded ? '✅' : '📦';
@@ -369,9 +363,9 @@
 
     $('detailTags').innerHTML =
       '<span class="detail-tag gb">' + escapeHtml(m.size) + '</span>' +
-      '<span class="detail-tag type">' + escapeHtml(typeLabel) + '</span>' +
-      '<span class="detail-tag ctx">上下文 ' + escapeHtml(m.ctx || '8K') + '</span>' +
-      '<span class="detail-tag">' + escapeHtml(String(m.param)) + 'B 参数</span>';
+      (m.ctx && m.ctx !== 'N/A' ? '<span class="detail-tag ctx">上下文 ' + escapeHtml(m.ctx) + '</span>' : '') +
+      '<span class="detail-tag">' + escapeHtml(String(m.param)) + 'B 参数</span>' +
+      '<span class="detail-tag" style="border-color:var(--accent);color:var(--accent);">' + escapeHtml(m.backend || 'llama-server') + '</span>';
 
     var statusRow = $('detailStatusRow');
     if (isRunning) {
@@ -493,23 +487,6 @@
     expandFilterBtn.style.borderColor = open ? 'var(--accent)' : '';
   });
 
-  document.querySelectorAll('.filter-check[data-param]').forEach(function(el) {
-    el.addEventListener('click', function() {
-      document.querySelectorAll('.filter-check[data-param]').forEach(function(c) { c.classList.remove('checked'); });
-      el.classList.add('checked');
-      filterState.param = el.dataset.param;
-      renderModels();
-    });
-  });
-  document.querySelectorAll('.filter-check[data-type]').forEach(function(el) {
-    el.addEventListener('click', function() {
-      document.querySelectorAll('.filter-check[data-type]').forEach(function(c) { c.classList.remove('checked'); });
-      el.classList.add('checked');
-      filterState.type = el.dataset.type;
-      renderModels();
-    });
-  });
-
   modelSearchInput.addEventListener('input', renderModels);
 
   /* ---- 从 models.json 加载（经 C++ config bridge）---- */
@@ -565,6 +542,10 @@
   window.showDetail = showDetail;
   window.renderModels = renderModels;
   window.refreshDetailMetrics = refreshDetailMetrics;
+  window.loadModels = loadModels;
+
+  // 刷新按钮
+  $('refreshModelBtn').addEventListener('click', loadModels);
 
   loadModels();
 })();

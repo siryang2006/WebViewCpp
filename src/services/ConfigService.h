@@ -257,8 +257,11 @@ public:
                         for (auto& m : data["models"]) {
                             if (m.contains("gguf_path") && m["gguf_path"].is_string()) {
                                 std::string savePath = dir + "/" + m["gguf_path"].get<std::string>();
-                                struct stat st;
-                                bool exists = (stat(savePath.c_str(), &st) == 0 && st.st_size > 0);
+                                struct _stat64 st;
+                                bool exists = (_stat64(savePath.c_str(), &st) == 0 && st.st_size > 0);
+                                if (exists) {
+                                    m["size_bytes"] = static_cast<long long>(st.st_size);
+                                }
                                 m["status"] = exists ? "downloaded" : "available";
                             } else {
                                 m["status"] = "available";

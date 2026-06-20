@@ -70,11 +70,12 @@
         </div>
       </div>
       <div class="model-running" id="modelRunningInfo" style="display:none;">
-        <div class="model-running-name" id="modelRunningName">-</div>
+        <select class="model-running-select" id="modelRunningSelect"></select>
         <div class="model-api-row" id="modelApiRow">
-          <span class="model-api-url" id="modelApiUrl" title="点击复制 API 地址">http://127.0.0.1:8080</span>
+          <span class="model-api-url" id="modelApiUrl" title="复制 API 地址">-</span>
           <button class="model-api-copy" id="modelApiCopy" title="复制 API 地址">📋</button>
         </div>
+        <button class="btn btn-red btn-stop-sidebar" id="stopModelBtn" style="display:none;font-size:11px;padding:2px 10px;margin-top:4px;">■ 停止此模型</button>
       </div>
       <div class="service-metrics" id="serviceMetrics" style="display:none;">
         <div class="metric-row">
@@ -171,28 +172,8 @@
 
     <!-- 内容区 -->
     <div class="content-area">
-      <div class="recommend-section">
-        <div class="recommend-header">推荐问题</div>
-        <div class="recommend-chips">
-          <span class="chip" data-q="我今天该如何安排时间？">我今天该如何安排时间？</span>
-          <span class="chip" data-q="帮我整理想法并列出要点">帮我整理想法并列出要点</span>
-          <span class="chip" data-q="解释一个技术概念">解释一个技术概念</span>
-          <span class="chip" data-q="分析决策的利弊">分析决策的利弊</span>
-          <span class="chip" data-q="改写使文字更清晰">改写使文字更清晰</span>
-        </div>
-      </div>
-
-      <!-- 欢迎卡片 / 对话区 -->
-      <div id="chatContainer">
-        <div class="welcome-card" id="welcomeCard">
-          <div class="welcome-icon">🤖</div>
-          <div class="welcome-title">开始一段新的智能对话</div>
-          <div class="welcome-desc">
-            你可以直接提问、上传图片补充上下文，或从下方选择一个推荐问题开始。
-          </div>
-        </div>
-        <div class="chat-area" id="chatArea" style="display:none"></div>
-      </div>
+      <!-- 对话区 -->
+      <div class="chat-area" id="chatArea" style="display:none"></div>
 
       <!-- 输入区 - 多模工作模式 -->
       <div class="input-area">
@@ -329,43 +310,11 @@
           <span>🔍</span>
           <input type="text" id="modelSearchInput" placeholder="搜索模型名称…">
         </div>
+        <button class="btn btn-ghost" id="refreshModelBtn" title="刷新文件状态">🔄</button>
       </div>
 
       <!-- 筛选面板 -->
       <div class="model-filter-panel" id="filterPanel">
-        <div class="filter-row">
-          <span class="filter-row-label">参数量</span>
-          <label class="filter-check checked" data-param="all">
-            <input type="checkbox" checked> 全部
-          </label>
-          <label class="filter-check" data-param="small">
-            <input type="checkbox"> &lt;10B
-          </label>
-          <label class="filter-check" data-param="medium">
-            <input type="checkbox"> 10B~30B
-          </label>
-          <label class="filter-check" data-param="large">
-            <input type="checkbox"> &gt;30B
-          </label>
-        </div>
-        <div class="filter-row">
-          <span class="filter-row-label">模型类型</span>
-          <label class="filter-check checked" data-type="all">
-            <input type="checkbox" checked> 全部
-          </label>
-          <label class="filter-check" data-type="gemma">
-            <input type="checkbox"> Gemma
-          </label>
-          <label class="filter-check" data-type="qwen">
-            <input type="checkbox"> Qwen
-          </label>
-          <label class="filter-check" data-type="llama">
-            <input type="checkbox"> Llama
-          </label>
-          <label class="filter-check" data-type="other">
-            <input type="checkbox"> 其他
-          </label>
-        </div>
       </div>
 
       <div class="model-list" id="modelList"></div>
@@ -409,6 +358,10 @@
         <div class="detail-info-item">
           <span class="detail-info-label">上下文长度</span>
           <span class="detail-info-value" id="detailCtx">8K</span>
+        </div>
+        <div class="detail-info-item">
+          <span class="detail-info-label">后端引擎</span>
+          <span class="detail-info-value" id="detailBackend">llama-server</span>
         </div>
       </div>
     </div>
@@ -528,6 +481,14 @@
           <option value="32K" selected>32K</option>
           <option value="64K">64K</option>
           <option value="128K">128K</option>
+          <option value="N/A">N/A（文生图）</option>
+        </select>
+      </div>
+      <div style="flex:1;min-width:100px;">
+        <div class="config-label">后端引擎</div>
+        <select class="add-model-input" id="addModelBackend">
+          <option value="llama-server">llama-server（LLM）</option>
+          <option value="llama-box">llama-box（文生图）</option>
         </select>
       </div>
     </div>
@@ -557,7 +518,7 @@
     <div class="config-model-name" id="configModelName">Gemma 4 E2B</div>
     <input type="hidden" id="configModelId">
 
-    <div class="config-row">
+    <div class="config-row config-row-ctx" id="configRowCtx">
       <div class="config-label-group">
         <div class="config-label">上下文长度 (-c)</div>
         <div class="config-hint">模型可处理的最大 token 数（越大占用内存越多）</div>
@@ -568,7 +529,7 @@
       </div>
     </div>
 
-    <div class="config-row">
+    <div class="config-row config-row-ngl" id="configRowNgl">
       <div class="config-label-group">
         <div class="config-label">GPU 层数 (-ngl)</div>
         <div class="config-hint">卸载到 GPU 的层数，-1 为全部，0 为纯 CPU</div>
@@ -590,7 +551,7 @@
       </div>
     </div>
 
-    <div class="config-row">
+    <div class="config-row config-row-flash" id="configRowFlash">
       <div class="config-label-group">
         <div class="config-label">Flash Attention (-fa)</div>
         <div class="config-hint">启用 Flash Attention 加速（需 GPU 支持）</div>
@@ -598,7 +559,7 @@
       <button class="config-toggle on" id="configFlashAttn"></button>
     </div>
 
-    <div class="config-row">
+    <div class="config-row config-row-thinking" id="configRowThinking">
       <div class="config-label-group">
         <div class="config-label">开启思考</div>
         <div class="config-hint">让模型输出推理过程（会略微降低速度）</div>

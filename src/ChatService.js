@@ -99,10 +99,13 @@ class ChatService {
 
     // 图片生成（FLUX/llama-box）
     // prompt: 文本描述, onImage(b64_json) 回调
-    // modelId: 可选，指定运行中的 FLUX 模型
-    generateImage(prompt, onImage, modelId) {
+    // opts: 可选 { modelId, size, steps }（size 如 "512x512"；steps schnell 用 4）
+    generateImage(prompt, onImage, opts) {
         var cbId = '__img_cb_' + this._nextId++;
         var self = this;
+        // 兼容旧签名 generateImage(prompt, onImage, modelId)
+        if (typeof opts === 'string') opts = { modelId: opts };
+        opts = opts || {};
 
         return new Promise(function(resolve, reject) {
             var cleanup = function() {
@@ -122,7 +125,9 @@ class ChatService {
             });
 
             var req = { prompt: prompt, callback: cbId };
-            if (modelId) req.modelId = modelId;
+            if (opts.modelId) req.modelId = opts.modelId;
+            if (opts.size) req.size = opts.size;
+            if (opts.steps) req.steps = opts.steps;
             window.__cpp__.chat.generateImage(req)
                 .then(function(r) {
                     if (r && !r.ok) {

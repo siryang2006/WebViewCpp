@@ -40,6 +40,10 @@ DownloadService::DownloadService(const std::string& base_dir)
     bind_sync("getSpeed", [this](const json& args) -> json {
         return getSpeed(args);
     });
+
+    bind_sync("getFileSize", [this](const json& args) -> json {
+        return getFileSize(args);
+    });
 }
 
 DownloadService::~DownloadService() {
@@ -166,6 +170,7 @@ void DownloadService::startDownload(const std::string& id, const json& args, Web
     task->modelId = modelId;
     task->url = url;
     task->savePath = savePath;
+    task->tempPath = savePath + ".tmp";
     task->callbackFn = callbackFn;
     task->totalSize = totalSize;
     task->wv = wv;
@@ -173,7 +178,7 @@ void DownloadService::startDownload(const std::string& id, const json& args, Web
     task->lastSpeedTime = std::chrono::steady_clock::now();
 
     struct stat st;
-    if (stat(savePath.c_str(), &st) == 0) {
+    if (stat(task->tempPath.c_str(), &st) == 0) {
         task->downloaded.store(st.st_size);
         task->lastDownloaded = st.st_size;
     }
@@ -297,6 +302,11 @@ json DownloadService::cancelDownload(const json& args) {
         task->thread.join();
     }
 
+    // Delete the incomplete temp file
+    if (!task->tempPath.empty()) {
+        remove(task->tempPath.c_str());
+    }
+
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_tasks.erase(modelId);
@@ -346,6 +356,53 @@ json DownloadService::getSpeed(const json& args) {
     }
 
     return ok_result({{"speed", m_tasks[modelId]->speed.load()}});
+}
+
+json DownloadService::getFileSize(const json& args) {
+    std::string url;
+    if (args.is_array() && !args.empty() && args[0].is_string()) {
+        url = args[0].get<std::string>();
+    } else if (args.is_string()) {
+        url = args.get<std::string>();
+    }
+    if (url.empty()) {
+        return error_result(ErrorCode::INVALID_ARGUMENTS, "url is required");
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return error_result(ErrorCode::INTERNAL_ERROR, "Failed to init curl");
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+
+    CURLcode rc = curl_easy_perform(curl);
+    if (rc != CURLE_OK) {
+        curl_easy_cleanup(curl);
+        return error_result(ErrorCode::INTERNAL_ERROR, curl_easy_strerror(rc));
+    }
+
+    long httpCode = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+    if (httpCode != 200) {
+        curl_easy_cleanup(curl);
+        return error_result(ErrorCode::INTERNAL_ERROR, "HTTP " + std::to_string(httpCode));
+    }
+
+    curl_off_t contentLength = 0;
+    curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &contentLength);
+    curl_easy_cleanup(curl);
+
+    if (contentLength <= 0) {
+        return error_result(ErrorCode::INTERNAL_ERROR, "Unknown file size");
+    }
+
+    return ok_result({{"size", static_cast<long long>(contentLength)}});
 }
 
 void DownloadService::downloadWorker(std::shared_ptr<DownloadTask> task) {
@@ -428,12 +485,23 @@ void DownloadService::downloadWorker(std::shared_ptr<DownloadTask> task) {
     // Content-Length (CURLE_PARTIAL_FILE otherwise), so we don't double-check size.
     if (res == CURLE_OK && (httpCode == 200 || httpCode == 206)) {
         task->completed.store(true);
+        // Rename temp file to final path atomically-ish
+        if (!task->tempPath.empty() && !task->savePath.empty()) {
+            remove(task->savePath.c_str());
+            if (rename(task->tempPath.c_str(), task->savePath.c_str()) != 0) {
+                std::cout << "[DownloadService] rename failed: " << task->tempPath
+                          << " -> " << task->savePath << std::endl;
+            }
+        }
     } else if (task->cancelled.load()) {
-        // cancelled by user
+        // cancelled by user: delete the incomplete temp file
+        if (!task->tempPath.empty()) {
+            remove(task->tempPath.c_str());
+        }
     } else if (task->paused.load()) {
-        // paused — thread exits, resumeDownload() will respawn it
+        // paused — leave the temp file on disk so resumeDownload() can continue
     } else {
-        // network/server failure: leave the partial file on disk so a later
+        // network/server failure: leave the temp file on disk so a later
         // resume can continue, but do NOT mark completed.
         task->cancelled.store(true);
     }
@@ -503,7 +571,7 @@ size_t DownloadService::writeCallback(void* ptr, size_t size, size_t nmemb, void
             task->downloaded.store(0);   // restarting from scratch
             task->lastDownloaded = 0;
         }
-        task->fileHandle = fopen(task->savePath.c_str(), mode);
+        task->fileHandle = fopen(task->tempPath.c_str(), mode);
         task->fileOpened = true;
         if (!task->fileHandle) {
             return 0;  // abort the transfer; worker will mark it failed

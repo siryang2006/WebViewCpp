@@ -7,7 +7,6 @@
    ================================================================ */
 (function() {
   var chatArea = $('chatArea');
-  var welcomeCard = $('welcomeCard');
   var inputBox = $('inputBox');
   var sendBtn = $('sendBtn');
   var modelSelect = $('chatModelSelect');
@@ -158,7 +157,6 @@
 
     window.AppState.currentConvId = id;
     chatArea.innerHTML = '';
-    welcomeCard.style.display = 'none';
     chatArea.style.display = 'flex';
 
     for (var i = 0; i < conv.messages.length; i++) {
@@ -183,7 +181,6 @@
     window.AppState.conversations.push(conv);
     window.AppState.currentConvId = id;
     chatArea.innerHTML = '';
-    welcomeCard.style.display = 'flex';
     chatArea.style.display = 'none';
     inputBox.value = '';
     inputBox.style.height = 'auto';
@@ -204,7 +201,6 @@
       } else {
         window.AppState.currentConvId = null;
         chatArea.innerHTML = '';
-        welcomeCard.style.display = 'flex';
         chatArea.style.display = 'none';
       }
     }
@@ -252,10 +248,7 @@
     if (!conv) {
       newConversation();
     }
-    if (welcomeCard.style.display !== 'none') {
-      welcomeCard.style.display = 'none';
-      chatArea.style.display = 'flex';
-    }
+    chatArea.style.display = 'flex';
   }
 
   function addMessage(text, isUser) {
@@ -387,9 +380,52 @@
   window.deleteConversation = deleteConversation;
 
   /* ---- 图片生成 ---- */
+
+  // 刷新图片模型下拉
+  function refreshImageModelSelect(eventData) {
+    var sel = $('imageModelSelect');
+    if (!sel) return;
+    var models = window.AppState.models || [];
+    // 从 eventData 或 AppState 获取 FLUX 模型 ID
+    var fluxIds = [];
+    if (eventData && eventData.id) {
+      fluxIds.push(eventData.id);
+    }
+    models.forEach(function(m) {
+      if ((m.status === 'running' || fluxIds.indexOf(m.id) >= 0) &&
+          m.type && m.type.toUpperCase().includes('FLUX') &&
+          fluxIds.indexOf(m.id) < 0) {
+        fluxIds.push(m.id);
+      }
+    });
+    if (fluxIds.length === 0) {
+      sel.innerHTML = '<option value="">没有运行的 FLUX 模型</option>';
+      return;
+    }
+    var cur = sel.value;
+    sel.innerHTML = '';
+    for (var i = 0; i < fluxIds.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = fluxIds[i];
+      var m = models.find(function(x) { return x.id === fluxIds[i]; });
+      opt.textContent = m ? (m.name || m.id) : fluxIds[i];
+      sel.appendChild(opt);
+    }
+    if (cur && fluxIds.indexOf(cur) >= 0) {
+      sel.value = cur;
+    }
+  }
+  window.refreshImageModelSelect = refreshImageModelSelect;
+
   $('imageGenBtn').addEventListener('click', function() {
     var prompt = $('imagePrompt').value.trim();
     if (!prompt || isGenImage) return;
+    var sel = $('imageModelSelect');
+    var modelId = sel ? sel.value : '';
+    if (!modelId) {
+      $('imagePreviewArea').innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">⚠️</span><span class="image-preview-placeholder-text">请先在模型页面启动 FLUX 模型</span></div>';
+      return;
+    }
     var area = $('imagePreviewArea');
     area.innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">⏳</span><span class="image-preview-placeholder-text">正在生成图片…</span></div>';
 
@@ -400,15 +436,13 @@
         if (b64) {
           area.innerHTML = '<img src="data:image/png;base64,' + b64 + '" alt="' + escapeHtml(prompt) + '">';
         }
-      }).then(function() {
+      }, { modelId: modelId }).then(function() {
         isGenImage = false;
       }).catch(function(e) {
         isGenImage = false;
-        // 模型未运行或生成失败 → 显示占位符
         area.innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">🎨</span><span class="image-preview-placeholder-text">「' + escapeHtml(prompt) + '」<br><span style="font-size:12px;color:var(--text-muted)">' + escapeHtml(e.message || '请先启动 FLUX 模型') + '</span></span></div>';
       });
     } else {
-      // 兜底占位
       setTimeout(function() {
         area.innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">🎨</span><span class="image-preview-placeholder-text">「' + escapeHtml(prompt) + '」<br><span style="font-size:12px;color:var(--text-muted)">（图片生成功能接入中）</span></span></div>';
       }, 1000);
@@ -525,7 +559,14 @@
   });
 
 
+  // 监听模型生命周期，刷新图片模型下拉
+  if (window.AppBus) {
+    AppBus.on('model:started', refreshImageModelSelect);
+    AppBus.on('model:stopped', refreshImageModelSelect);
+  }
+
   // 初始：建一个默认对话
   newConversation();
   refreshModelSelect();
+  refreshImageModelSelect();
 })();
