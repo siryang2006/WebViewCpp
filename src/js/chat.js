@@ -464,15 +464,21 @@
       .replace(/\{target_lang\}/g, dst === 'zh' ? '中文' : dst === 'en' ? 'English' : dst === 'ja' ? '日本語' : dst === 'ko' ? '한국어' : dst === 'fr' ? 'Français' : dst === 'de' ? 'Deutsch' : dst === 'es' ? 'Español' : dst === 'pt' ? 'Português' : dst === 'ru' ? 'Русский' : dst)
       .replace(/\{source_text\}/g, text);
 
-    // 查找运行中的模型
+    // 翻译优先使用 HY-MT2（翻译专用模型），没有则用用户选择的模型
     var models = window.AppState.models || [];
     var modelId = null;
-    for (var i = 0; i < models.length; i++) {
-      if (models[i].status === 'running') { modelId = models[i].id; break; }
-    }
-    if (!modelId) {
-      output.innerHTML = '<span style="color:var(--warn-color)">⚠️ 没有正在运行的模型</span>';
-      return;
+    var hyMt2 = models.find(function(m) {
+      return (m.id === 'HY-MT2-1.7B' || m.id === 'hy-mt2-1.7b' || m.id.toUpperCase().includes('HY-MT2')) && m.status === 'running';
+    });
+    if (hyMt2) {
+      modelId = hyMt2.id;
+    } else {
+      modelId = window.AppState.selectedModelId;
+      var selectedRunning = models.some(function(m) { return m.id === modelId && m.status === 'running'; });
+      if (!modelId || !selectedRunning) {
+        output.innerHTML = '<span style="color:var(--warn-color)">⚠️ 没有可用的翻译模型（HY-MT2 或选中的模型未在运行）</span>';
+        return;
+      }
     }
 
     isTyping = true;
@@ -514,14 +520,6 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('translateBtn').click(); }
   });
 
-  // 翻译语言交换按钮
-  $('translateSwap').addEventListener('click', function() {
-    var src = $('translateSrc');
-    var dst = $('translateDst');
-    var tmp = src.value;
-    src.value = dst.value;
-    dst.value = tmp;
-  });
 
   // 初始：建一个默认对话
   newConversation();

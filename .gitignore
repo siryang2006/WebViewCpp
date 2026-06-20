@@ -20,3 +20,4 @@ nuget.exe
 *.VC.db
 __pycache__/
 *.pyc
+tests/screenshot.py

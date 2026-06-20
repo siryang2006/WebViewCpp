@@ -88,8 +88,12 @@ $('translateSwap').addEventListener('click', function() {
   var src = $('translateSrc');
   var dst = $('translateDst');
   var tmp = src.value;
-  // 如果源是 auto，交换后目标保留原值（dst 无 auto 选项）
-  if (tmp === 'auto') return;
+  // 如果源是 auto，交换后目标设为 auto（自动检测结果填入源）
+  if (tmp === 'auto') {
+    src.value = dst.value;
+    dst.value = 'auto';
+    return;
+  }
   src.value = dst.value;
   dst.value = tmp;
 });
