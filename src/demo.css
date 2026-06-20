@@ -1083,6 +1083,16 @@ html, body {
 }
 .translate-output-placeholder { color: var(--text-muted); }
 
+#translateTemplateArea {
+  width: 100%;
+  box-sizing: border-box;
+}
+#translateTemplateInput {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
 /* ================================================================
    滚动条
    ================================================================ */

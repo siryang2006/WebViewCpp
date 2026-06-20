@@ -275,8 +275,8 @@
           <!-- 翻译 prompt 模板（可编辑） -->
           <div class="translate-template-area" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-              <button class="tool-btn" id="translateTemplateToggle" title="编辑翻译提示模板" style="font-size:12px;padding:2px 8px;">📝 翻译模板</button>
-              <span style="font-size:11px;color:var(--text-muted);">使用 {source_text} 和 {target_lang} 作为占位符</span>
+              <button class="tool-btn" id="translateTemplateToggle" title="编辑翻译提示模板">📝</button>
+              <span style="font-size:11px;color:var(--text-muted);">翻译模板 · 使用 {source_text} 和 {target_lang} 作为占位符</span>
             </div>
             <div id="translateTemplateArea" style="display:none;">
               <textarea class="input-box" id="translateTemplateInput" rows="2" placeholder="翻译 prompt 模板…" style="font-size:12px;padding:6px 10px;">将以下文本翻译为 {target_lang}，注意只需要输出翻译后的结果，不要额外解释：\n\n{source_text}</textarea>

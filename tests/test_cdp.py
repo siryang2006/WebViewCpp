@@ -830,6 +830,19 @@ async def run_cdp_tests():
             "(function(){var btn=document.getElementById('translateSwap');if(btn){var src=document.getElementById('translateSrc').value;var dst=document.getElementById('translateDst').value;btn.click();return document.getElementById('translateSrc').value!==src?'swapped':'not-swapped';}return 'no-btn';})()")
         check("translate swap button works", val == 'swapped', f"got {val}")
 
+        # 回车触发翻译：在原文框按 Enter 应等价于点击翻译按钮（无模型时显示警告）
+        cid, val = await evaluate(ws, cid,
+            "(function(){var o=document.getElementById('translateOutput');if(o)o.innerHTML='';"
+            "var inp=document.getElementById('translateSrcText');"
+            "if(!inp)return'no-input';inp.value='hello';inp.dispatchEvent(new Event('input',{bubbles:true}));"
+            "var ev=new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});"
+            "inp.dispatchEvent(ev);"
+            "var o2=document.getElementById('translateOutput');"
+            "return o2?(o2.textContent.trim()||'empty'):'no-out';})()")
+        check("translate Enter key triggers translation",
+              isinstance(val, str) and val not in ('empty', 'no-out', 'no-input'),
+              f"got {val}")
+
         # Translate action button (no model running -> placeholder/failure)
         cid, val = await evaluate(ws, cid,
             "(function(){var btn=document.getElementById('translateBtn');if(btn){btn.click();return 'clicked';}return 'no-btn';})()")
@@ -1341,6 +1354,50 @@ async def run_cdp_tests():
                 safe_print(f"  DIAG: 乐乐 bot response = {val[:300]}")
                 check("乐乐: bot responds with content",
                       bool(val) and val != 'no-bot-msg' and len(str(val)) > 0, f"got {str(val)[:100]}")
+
+                # ---------- 翻译连续两次（回归：isTyping 卡死导致只能翻译一次）----------
+                # 切到翻译卡片，连续翻译两段不同文本，验证第二次仍能产出结果。
+                await evaluate(ws, cid,
+                    '(function(){document.querySelector(\'.tab-btn[data-tab="app"]\').click();return "switched";})()')
+                await asyncio.sleep(0.2)
+                await evaluate(ws, cid,
+                    "(function(){var c=document.querySelectorAll('.feature-card');if(c.length>=2){c[1].click();}return'translate';})()")
+                await asyncio.sleep(0.3)
+
+                async def do_translate(text):
+                    # 设置目标语言为中文，输入文本，点翻译，等待输出非 loading
+                    # 先清空旧输出，避免抓到上一次的残留结果
+                    await evaluate(ws, cid,
+                        "(function(){var o=document.getElementById('translateOutput');if(o)o.textContent='';"
+                        "var d=document.getElementById('translateDst');if(d)d.value='zh';"
+                        "var inp=document.getElementById('translateSrcText');"
+                        "if(inp){inp.value=" + json.dumps(text) + ";inp.dispatchEvent(new Event('input',{bubbles:true}));}"
+                        "var btn=document.getElementById('translateBtn');if(btn)btn.click();return'sent';})()")
+                    _c = cid
+                    for _ in range(60):
+                        _c, out = await evaluate(ws, _c,
+                            "(function(){var o=document.getElementById('translateOutput');"
+                            "if(!o)return'no-out';var t=o.textContent.trim();"
+                            "if(t&&t.indexOf('翻译中')<0&&t.indexOf('⏳')<0)return t;return'PENDING';})()")
+                        if isinstance(out, str) and out not in ('PENDING', 'no-out', ''):
+                            return out
+                        await asyncio.sleep(0.5)
+                    return 'TIMEOUT'
+
+                t1 = await do_translate("Hello, how are you today?")
+                safe_print(f"  DIAG: translate #1 = {str(t1)[:120]}")
+                check("translate first run produces output",
+                      isinstance(t1, str) and t1 not in ('TIMEOUT', 'no-out') and len(t1) > 0,
+                      f"got {str(t1)[:80]}")
+
+                # 等待 isTyping 重置（chat 完成后才允许第二次翻译）
+                await asyncio.sleep(1)
+
+                t2 = await do_translate("Cats are sleeping on the warm roof.")
+                safe_print(f"  DIAG: translate #2 = {str(t2)[:120]}")
+                check("translate second run produces output (isTyping reset)",
+                      isinstance(t2, str) and t2 not in ('TIMEOUT', 'no-out') and len(t2) > 0,
+                      f"got {str(t2)[:80]}")
 
                 # ---- 多模型并行运行测试（用已知能用的第二个模型）----
                 model2_id = "dolphin-gemma2-2b"

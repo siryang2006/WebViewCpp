@@ -483,17 +483,21 @@
       prompt = '源语言为' + (src === 'zh' ? '中文' : src === 'en' ? '英语' : src === 'ja' ? '日语' : src === 'ko' ? '韩语' : src === 'fr' ? '法语' : src === 'de' ? '德语' : src === 'es' ? '西班牙语' : src === 'pt' ? '葡萄牙语' : src === 'ru' ? '俄语' : src) + '。' + prompt;
     }
 
+    var fullText = '';
+    var started = false;
     window.chatService.chat(prompt, function(token) {
-      if (token === '__DONE__') {
-        isTyping = false;
-        return;
-      }
-      // 每次追加前清空 loading 状态
-      if (output.querySelector('.translate-output-placeholder')) {
+      // 收到首个 token 时清空 loading 占位
+      if (!started) {
         output.innerHTML = '';
+        started = true;
       }
-      output.innerHTML += escapeHtml(token);
-    }, modelId).catch(function(e) {
+      fullText += token;
+      output.innerHTML = escapeHtml(fullText);
+    }, modelId).then(function() {
+      // 流结束：重置标志位（chatService 完成时 resolve，不发 __DONE__ token）
+      isTyping = false;
+      if (!fullText) output.innerHTML = '<span style="color:var(--text-muted)">（无输出）</span>';
+    }).catch(function(e) {
       isTyping = false;
       output.innerHTML = '<span style="color:var(--warn-color)">翻译失败: ' + escapeHtml(String(e)) + '</span>';
     });
@@ -503,6 +507,11 @@
   $('translateSrcText').addEventListener('input', function() {
     var len = this.value.length;
     $('translateSrcCount').textContent = len + ' 字';
+  });
+
+  // 回车执行翻译（Shift+Enter 换行）
+  $('translateSrcText').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('translateBtn').click(); }
   });
 
   // 翻译语言交换按钮
