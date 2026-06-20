@@ -482,6 +482,15 @@ std::string ChatService::getServerPath(const std::string& backend) {
 
 std::string ChatService::getLlamaBoxPath() {
     std::string exe_dir = getExeDir();
+
+    // 优先从 llama-box-bin 子目录查找（llama-box 与 llama-server 是不同构建，
+    // 各自的 ggml/依赖 DLL 不能混用，故用独立子目录避免 DLL 冲突）
+    std::string box_path = exe_dir + "/llama-box-bin/llama-box.exe";
+    if (GetFileAttributesA(box_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        return box_path;
+    }
+
+    // 回退：exe 同目录
     return exe_dir + "/llama-box.exe";
 }
 
@@ -570,7 +579,8 @@ bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& p
     };
 
     // 工作目录设为 exe 目录：保证 gguf 相对路径、DLL 依赖等都能正确解析。
-    // llama-box 不使用子目录，直接找 exe 同目录。
+    // 注：llama-box 在 llama-box-bin 子目录时，其依赖 DLL 由 Windows 从 exe 自身所在
+    // 目录（llama-box-bin）加载，gguf 已解析为绝对路径，故工作目录仍设为 exe_dir。
     auto server = std::make_unique<Subprocess>();
     int health_timeout = (params.backend == "llama-box") ? 60000 : 30000; // FLUX 模型加载更慢
     bool ok = server->start(getServerPath(params.backend), args.str(), exe_dir, healthCheck, health_timeout, nullptr);

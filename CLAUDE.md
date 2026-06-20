@@ -114,6 +114,6 @@ tests/
 - Comments are in Chinese — match when editing.
 - `third_party/` (curl, zlib, webview, WebView2 SDK) is vendored — don't modify.
 - Frontend files copied to `build/Debug/` by CMake POST_BUILD.
-- llama-server binary goes next to the exe. Download from https://github.com/ggml-org/llama.cpp/releases
-- llama-box binary goes next to the exe for FLUX/image models. Download from https://github.com/gpustack/llama-box/releases
+- llama-server binary goes in the `llama-bin/` subdirectory next to the exe (CMake POST_BUILD copies it from `third_party/llama-b9703-bin-win-vulkan-x64`). Download from https://github.com/ggml-org/llama.cpp/releases
+- llama-box binary (for FLUX/image models) goes in the `llama-box-bin/` subdirectory next to the exe (CMake POST_BUILD copies it from `third_party/dl-llama-box-windows-amd64-cuda-12.4`). It needs its **own** subdir — llama-box and llama-server are different builds whose ggml/dependency DLLs must not be mixed. Download from https://github.com/gpustack/llama-box/releases
 - Model files go in `downloads/<modelId>/` subdirectory of exe location.

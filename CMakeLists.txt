@@ -142,3 +142,14 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/llama-b9703-bin-win-vulkan-x64")
             "$<TARGET_FILE_DIR:${PROJECT_NAME}>/llama-bin"
     )
 endif()
+
+# 复制 llama-box 二进制目录到输出目录（FLUX/图片生成后端）。
+# 用独立子目录 llama-box-bin：llama-box 与 llama-server 是不同构建，
+# 各自的 ggml/依赖 DLL 不能混用，分目录可避免 DLL 加载冲突。
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/dl-llama-box-windows-amd64-cuda-12.4")
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/third_party/dl-llama-box-windows-amd64-cuda-12.4"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>/llama-box-bin"
+    )
+endif()
