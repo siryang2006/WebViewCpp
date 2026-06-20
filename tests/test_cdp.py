@@ -855,6 +855,27 @@ async def run_cdp_tests():
             "(function(){var btn=document.getElementById('translateSwap');if(btn){var src=document.getElementById('translateSrc').value;var dst=document.getElementById('translateDst').value;btn.click();return document.getElementById('translateSrc').value!==src?'swapped':'not-swapped';}return 'no-btn';})()")
         check("translate swap button works", val == 'swapped', f"got {val}")
 
+        # 复制译文：点击后按钮应显示反馈（✓ 成功 / ✕ 失败），而非静默无响应
+        # clipboard.writeText 是异步的，点击后需等微任务/Promise 完成图标才更新
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                var out = document.getElementById('translateOutput');
+                out.textContent = '测试译文内容';
+                document.getElementById('translateCopy').click();
+                return 'clicked';
+            })()
+        """)
+        await asyncio.sleep(0.4)
+        cid, val = await evaluate(ws, cid,
+            "document.getElementById('translateCopy').textContent")
+        check("translate copy shows feedback icon",
+              val in ('✓', '✕'), f"got {repr(val)}")  # ✓ 或 ✕
+        # 等待图标恢复（1.2s）
+        await asyncio.sleep(1.4)
+        cid, val = await evaluate(ws, cid,
+            "document.getElementById('translateCopy').textContent")
+        check("translate copy icon reverts after feedback", val == '\U0001f4cb', f"got {repr(val)}")  # 📋
+
         # 回车触发翻译：在原文框按 Enter 应等价于点击翻译按钮（无模型时显示警告）
         cid, val = await evaluate(ws, cid,
             "(function(){var o=document.getElementById('translateOutput');if(o)o.innerHTML='';"
@@ -956,6 +977,76 @@ async def run_cdp_tests():
         cid, val = await evaluate(ws, cid,
             "(function(){var dp=document.querySelector('.model-detail-page');return dp&&dp.classList.contains('open')?'still-open':'closed';})()")
         check("overlay click closes detail page", val == 'closed', f"got {val}")
+
+        # ========== AppBus 事件总线 ==========
+        # 基本 API 存在
+        cid, val = await evaluate(ws, cid,
+            "JSON.stringify({on:typeof window.AppBus.on,off:typeof window.AppBus.off,emit:typeof window.AppBus.emit})")
+        ab = json.loads(val)
+        check("AppBus.on/off/emit are functions",
+              ab.get("on") == "function" and ab.get("off") == "function" and ab.get("emit") == "function",
+              f"got {val}")
+
+        # on/emit：订阅者收到 detail
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                var got = null;
+                var h = function(d){ got = d; };
+                window.AppBus.on('__test_evt__', h);
+                window.AppBus.emit('__test_evt__', {v: 42});
+                window.AppBus.off('__test_evt__', h);
+                return JSON.stringify({got: got});
+            })()
+        """)
+        check("AppBus on/emit delivers detail", json.loads(val).get("got", {}).get("v") == 42, f"got {val}")
+
+        # off：取消订阅后不再触发
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                var count = 0;
+                var h = function(){ count++; };
+                window.AppBus.on('__test_off__', h);
+                window.AppBus.emit('__test_off__');
+                window.AppBus.off('__test_off__', h);
+                window.AppBus.emit('__test_off__');
+                return count;
+            })()
+        """)
+        check("AppBus.off stops further delivery", val == 1, f"got {val}")
+
+        # 错误隔离：一个 handler 抛异常不影响后续 handler / emit 本身
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                var reached = false;
+                var bad = function(){ throw new Error('boom'); };
+                var good = function(){ reached = true; };
+                window.AppBus.on('__test_err__', bad);
+                window.AppBus.on('__test_err__', good);
+                var threw = false;
+                try { window.AppBus.emit('__test_err__'); } catch(e) { threw = true; }
+                window.AppBus.off('__test_err__', bad);
+                window.AppBus.off('__test_err__', good);
+                return JSON.stringify({reached: reached, emitThrew: threw});
+            })()
+        """)
+        er = json.loads(val)
+        check("AppBus isolates handler errors (later handler still runs)",
+              er.get("reached") is True and er.get("emitThrew") is False, f"got {val}")
+
+        # ========== 独立 typing 标志（对话/图片/翻译互不阻塞）==========
+        # 三个功能各自有独立的输入框/按钮，验证 DOM 上确实是分离的入口
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                return JSON.stringify({
+                    chat: !!document.getElementById('sendBtn'),
+                    image: !!document.getElementById('imageGenBtn'),
+                    translate: !!document.getElementById('translateBtn')
+                });
+            })()
+        """)
+        ft = json.loads(val)
+        check("chat/image/translate have separate trigger buttons",
+              ft.get("chat") and ft.get("image") and ft.get("translate"), f"got {val}")
 
         # ========== ChatService Tests ==========
         # 验证 C++ ChatService 对象存在

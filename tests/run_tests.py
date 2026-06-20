@@ -35,7 +35,7 @@ def run_tests():
         print("WARNING: Some tests FAILED")
         return False
 
-    # Verify expected test results (all 35 tests should be present)
+    # Verify expected test results (all 41 tests should be present)
     expected = [
         "math.add(10,20)",
         "math.multiply(6,7)",
