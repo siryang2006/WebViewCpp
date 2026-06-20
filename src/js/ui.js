@@ -18,19 +18,22 @@
 })();
 
 /* ---- 功能卡片切换 + 输入面板联动 ---- */
+// 已实现的功能（有对应 input-panel）
+var IMPLEMENTED_FEATURES = ['chat', 'translate', 'image'];
+
 function switchFeature(feature) {
   var panels = document.querySelectorAll('.input-panel');
-  var found = false;
-  for (var i = 0; i < panels.length; i++) {
-    var match = panels[i].dataset.feature === feature;
-    panels[i].classList.toggle('active', match);
-    if (match) found = true;
+  var implemented = IMPLEMENTED_FEATURES.indexOf(feature) >= 0;
+  // 未实现的功能 → 显示"开发中"面板，并填入卡片名称
+  var targetFeature = implemented ? feature : '__coming_soon__';
+  if (!implemented) {
+    var card = document.querySelector('.feature-card[data-feature="' + feature + '"]');
+    var name = card ? (card.querySelector('.feature-card-label') || {}).textContent : '';
+    var titleEl = $('comingSoonTitle');
+    if (titleEl) titleEl.textContent = (name ? name + ' · ' : '') + '功能开发中';
   }
-  // 无对应面板时回退到聊天
-  if (!found) {
-    for (var j = 0; j < panels.length; j++) {
-      panels[j].classList.toggle('active', panels[j].dataset.feature === 'chat');
-    }
+  for (var i = 0; i < panels.length; i++) {
+    panels[i].classList.toggle('active', panels[i].dataset.feature === targetFeature);
   }
   document.querySelectorAll('.feature-card').forEach(function(c) {
     c.classList.toggle('active', c.dataset.feature === feature);

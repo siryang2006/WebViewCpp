@@ -436,6 +436,31 @@ async def run_cdp_tests():
             "(function(){var c=document.querySelectorAll('.feature-card');c[1].click();return c[1].classList.contains('active');})()")
         check("feature card click adds active class", val)
 
+        # 未实现的功能卡片（如 OCR/写代码）应显示"开发中"占位面板，而非静默回落到聊天
+        cid, val = await evaluate(ws, cid, """
+            (function(){
+                var card = document.querySelector('.feature-card[data-feature="ocr"]')
+                        || document.querySelector('.feature-card[data-feature="code"]');
+                if (!card) return JSON.stringify({noCard:true});
+                card.click();
+                var panel = document.querySelector('.input-panel[data-feature="__coming_soon__"]');
+                var title = document.getElementById('comingSoonTitle');
+                return JSON.stringify({
+                    panelActive: panel ? panel.classList.contains('active') : false,
+                    titleText: title ? title.textContent : ''
+                });
+            })()
+        """)
+        cs = json.loads(val)
+        check("unimplemented feature shows coming-soon panel",
+              cs.get("panelActive") is True, f"got {val}")
+        check("coming-soon panel shows feature name with 开发中",
+              "开发中" in cs.get("titleText", ""), f"got {val}")
+        # 切回智能对话卡片，恢复初始状态
+        await evaluate(ws, cid,
+            "(function(){var c=document.querySelector('.feature-card[data-feature=\"chat\"]');if(c)c.click();return'ok';})()")
+        await asyncio.sleep(0.2)
+
         # ========== 左侧对话列表 ==========
         # DIAG: check sidebar state
         cid, diag = await evaluate(ws, cid, """
