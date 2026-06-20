@@ -107,6 +107,7 @@ tests/
 | Path traversal in ConfigService | Use GetFullPathNameA to validate final path stays within base_dir |
 | nvidia-smi detection race | Protect static variables with mutex for thread-safe one-time init |
 | curl error messages | Use `curl_easy_strerror()` for human-readable error output |
+| llama-box FLUX warmup timeout | Pass `--no-warmup` to llama-box: CPU warmup of diffusion models (one full empty run) is extremely slow and trips the health-check timeout before the server is actually ready |
 
 ## Conventions
 

@@ -538,6 +538,11 @@ bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& p
         args << " --port " << port;
         args << " --images";
         args << " -np 1";
+        // 跳过 warmup：CPU 上 FLUX 等扩散模型的 warmup（一次完整空跑）极慢，
+        // 会导致健康检查在模型其实已就绪前就超时。跳过后服务能在加载完成后立即监听。
+        args << " --no-warmup";
+        // GPU 层数透传（有 NVIDIA GPU 时大幅加速扩散；-1 表示全部卸载到 GPU）
+        if (params.n_gpu_layers != 0) args << " -ngl " << params.n_gpu_layers;
     } else {
         args << "-m \"" << model_arg << "\"";
         args << " -c " << params.ctx;
