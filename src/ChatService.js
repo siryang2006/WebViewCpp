@@ -11,13 +11,14 @@ class ChatService {
         this._streamCallbacks = {};
     }
 
-    // 启动模型：参数透传到 llama-server 命令行
-    // params: { modelId, ggufPath, ctx, ngl, threads, flashAttn, thinking }
+    // 启动模型：参数透传到 llama-server/llama-box 命令行
+    // params: { modelId, ggufPath, backend, ctx, ngl, threads, flashAttn, thinking }
     startModel(params) {
         var self = this;
         return window.__cpp__.chat.startModel({
             modelId: params.modelId,
             ggufPath: params.ggufPath,
+            backend: params.backend || 'llama-server',
             ctx: params.ctx || 4096,
             ngl: (params.ngl === undefined ? -1 : params.ngl),
             threads: params.threads || 4,
@@ -51,7 +52,7 @@ class ChatService {
     // 流式对话：onToken(token) 逐 token 回调，返回 Promise 在完成时 resolve
     // C++ 通过 callback id 回调 { token, done }，本方法负责注册/清理回调。
     // modelId 可选：指定向哪个运行中的模型推理；不传时若只有一个模型在运行则用它。
-    chat(prompt, onToken, modelId) {
+    chat(prompt, onToken, modelId, systemPrompt) {
         var cbId = '__chat_cb_' + this._nextId++;
         var self = this;
 
@@ -78,6 +79,7 @@ class ChatService {
             // 回调泄漏。cleanup/resolve 均幂等。
             var req = { prompt: prompt, callback: cbId };
             if (modelId) req.modelId = modelId;
+            if (systemPrompt) req.system = systemPrompt;
             window.__cpp__.chat.chat(req)
                 .then(function(r) {
                     if (r && !r.ok) {
@@ -86,6 +88,51 @@ class ChatService {
                     } else {
                         cleanup();
                         resolve();
+                    }
+                })
+                .catch(function(e) {
+                    cleanup();
+                    reject(e);
+                });
+        });
+    }
+
+    // 图片生成（FLUX/llama-box）
+    // prompt: 文本描述, onImage(b64_json) 回调
+    // modelId: 可选，指定运行中的 FLUX 模型
+    generateImage(prompt, onImage, modelId) {
+        var cbId = '__img_cb_' + this._nextId++;
+        var self = this;
+
+        return new Promise(function(resolve, reject) {
+            var cleanup = function() {
+                delete self._streamCallbacks[cbId];
+                if (window.__registered_cbs__) delete window.__registered_cbs__[cbId];
+            };
+
+            window.__register_cb__(cbId, function(data) {
+                if (data.done) {
+                    cleanup();
+                    resolve(data);
+                    return;
+                }
+                if (data.b64_json && onImage) {
+                    onImage(data.b64_json);
+                }
+            });
+
+            var req = { prompt: prompt, callback: cbId };
+            if (modelId) req.modelId = modelId;
+            window.__cpp__.chat.generateImage(req)
+                .then(function(r) {
+                    if (r && !r.ok) {
+                        cleanup();
+                        reject(new Error(r.message || 'Image generation failed'));
+                    } else if (r && r.ok && r.data && r.data.b64_json) {
+                        // 已完成
+                    } else {
+                        cleanup();
+                        resolve(r);
                     }
                 })
                 .catch(function(e) {

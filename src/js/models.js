@@ -203,8 +203,13 @@
     }
   }
 
-  /* ---- 添加模型 ---- */
+  /* ---- 添加/编辑模型 ---- */
+  var _editModeId = null;
+
   function showAddModel() {
+    _editModeId = null;
+    $('addModelTitle').textContent = '➕ 添加模型';
+    $('addModelConfirm').textContent = '确认添加';
     $('addModelId').value = '';
     $('addModelName').value = '';
     $('addModelUrl').value = '';
@@ -217,36 +222,84 @@
     $('addModelOverlay').classList.add('show');
   }
 
+  function showEditModel(id) {
+    var m = findModel(id);
+    if (!m) return;
+    _editModeId = id;
+    $('addModelTitle').textContent = '✏️ 编辑模型';
+    $('addModelConfirm').textContent = '保存修改';
+    $('addModelId').value = m.id;
+    $('addModelId').disabled = true;
+    $('addModelName').value = m.name || '';
+    $('addModelUrl').value = m.download_url || '';
+    $('addModelDesc').value = m.desc || '';
+    $('addModelSize').value = m.size || '';
+    $('addModelSizeBytes').value = m.size_bytes || '';
+    $('addModelParam').value = m.param || '';
+    $('addModelType').value = m.type || 'Other';
+    $('addModelCtx').value = m.ctx || '32K';
+    $('addModelOverlay').classList.add('show');
+  }
+
   $('addModelBtn').addEventListener('click', showAddModel);
   $('addModelCancel').addEventListener('click', function() {
     $('addModelOverlay').classList.remove('show');
+    $('addModelId').disabled = false;
   });
   $('addModelConfirm').addEventListener('click', function() {
     var id = $('addModelId').value.trim();
-    var name = $('addModelName').value.trim();
     var url = $('addModelUrl').value.trim();
     if (!id || !url) { alert('模型 ID 和下载 URL 为必填项'); return; }
-    var model = {
-      id: id,
-      name: name || id,
-      download_url: url,
-      desc: $('addModelDesc').value.trim() || '',
-      size: $('addModelSize').value.trim() || 'Unknown',
-      size_bytes: parseInt($('addModelSizeBytes').value) || 0,
-      param: parseFloat($('addModelParam').value) || 0,
-      type: $('addModelType').value,
-      ctx: $('addModelCtx').value
-    };
-    window.__cpp__.config.addModel(model).then(function(data) {
-      $('addModelOverlay').classList.remove('show');
-      window.AppState.models = (data.models || []).map(function(m) {
-        m.progress = (m.status === 'downloaded' || m.status === 'running') ? 100 : 0;
-        return m;
+    if (_editModeId) {
+      var updates = {
+        id: id,
+        name: $('addModelName').value.trim() || id,
+        download_url: url,
+        desc: $('addModelDesc').value.trim() || '',
+        size: $('addModelSize').value.trim() || 'Unknown',
+        size_bytes: parseInt($('addModelSizeBytes').value) || 0,
+        param: parseFloat($('addModelParam').value) || 0,
+        type: $('addModelType').value,
+        ctx: $('addModelCtx').value
+      };
+      window.__cpp__.config.updateModel(updates).then(function(data) {
+        $('addModelOverlay').classList.remove('show');
+        $('addModelId').disabled = false;
+        window.AppState.models = (data.models || []).map(function(m) {
+          m.progress = (m.status === 'downloaded' || m.status === 'running') ? 100 : 0;
+          return m;
+        });
+        renderModels();
+        // 重新打开详情页显示更新后的数据
+        var savedId = _editModeId;
+        _editModeId = null;
+        showDetail(savedId);
+      }).catch(function(e) {
+        alert('编辑模型失败: ' + e);
       });
-      renderModels();
-    }).catch(function(e) {
-      alert('添加模型失败: ' + e);
-    });
+    } else {
+      var model = {
+        id: id,
+        name: $('addModelName').value.trim() || id,
+        download_url: url,
+        desc: $('addModelDesc').value.trim() || '',
+        size: $('addModelSize').value.trim() || 'Unknown',
+        size_bytes: parseInt($('addModelSizeBytes').value) || 0,
+        param: parseFloat($('addModelParam').value) || 0,
+        type: $('addModelType').value,
+        ctx: $('addModelCtx').value
+      };
+      window.__cpp__.config.addModel(model).then(function(data) {
+        $('addModelOverlay').classList.remove('show');
+        window.AppState.models = (data.models || []).map(function(m) {
+          m.progress = (m.status === 'downloaded' || m.status === 'running') ? 100 : 0;
+          return m;
+        });
+        renderModels();
+      }).catch(function(e) {
+        alert('添加模型失败: ' + e);
+      });
+    }
   });
 
   /* ---- 删除模型（确认弹窗）---- */
@@ -373,11 +426,16 @@
       actionBtn.onclick = function() { startDownload(id); closeDetail(); };
     }
 
+    // 编辑按钮
+    $('detailEditBtn').onclick = function() { showEditModel(id); };
+
     $('detailPage').classList.add('open');
+    $('detailOverlay').classList.add('open');
   }
 
   function closeDetail() {
     $('detailPage').classList.remove('open');
+    $('detailOverlay').classList.remove('open');
     currentDetailId = null;
   }
 
@@ -422,6 +480,9 @@
 
   $('detailBackBtn').addEventListener('click', closeDetail);
   $('detailCloseBtn2').addEventListener('click', closeDetail);
+  $('detailOverlay').addEventListener('click', function(e) {
+    if (e.target === this) closeDetail();
+  });
 
   /* ---- 筛选 ---- */
   expandFilterBtn.addEventListener('click', function() {
@@ -467,6 +528,30 @@
 
   // 配置弹窗启动成功后需要重渲染列表（config.js 发出）
   AppBus.on('models:changed', renderModels);
+
+  // 监听模型生命周期事件，直接更新 AppState.models 中对应模型的状态，
+  // 避免 models:changed 触发 loadModels() 从 config.json 读取旧状态覆盖。
+  AppBus.on('model:started', function(d) {
+    var models = window.AppState.models || [];
+    for (var i = 0; i < models.length; i++) {
+      if (models[i].id === d.id) {
+        models[i].status = 'running';
+        if (d.port) models[i].port = d.port;
+        break;
+      }
+    }
+    renderModels();
+  });
+  AppBus.on('model:stopped', function(d) {
+    var models = window.AppState.models || [];
+    for (var i = 0; i < models.length; i++) {
+      if (!d || !d.id || models[i].id === d.id) {
+        models[i].status = 'downloaded';
+        delete models[i].port;
+      }
+    }
+    renderModels();
+  });
 
   // 行内 onclick 依赖的全局函数
   window.startDownload = startDownload;

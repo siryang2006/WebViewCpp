@@ -47,7 +47,7 @@ Three layers, bottom-up:
 ### Services
 
 - **`DownloadService`** — libcurl download with pause/resume/cancel. One thread per `modelId`, progress via JS callback.
-- **`ChatService`** — llama-server subprocess management + HTTP streaming inference. **Multi-model**: runs several `llama-server` instances concurrently, keyed by `modelId`, each with its own port + `Subprocess` + metrics. `startModel({modelId,...})` / `stopModel({modelId?})` (no modelId = stop all) / `chat({modelId?, prompt, callback})`. `getStatus`/`getMetrics` take an optional `modelId`: with it they return one model's object; without it they return `{status, models:[...]}` (one entry per running model). Per-model metrics include `memoryMB`, `cpuPercent`, `gpuMemoryMB`, `threads`, `handles`, `port`, and `pid` (the `llama-server.exe` process id — the subprocess runs hidden via `CREATE_NO_WINDOW`, but is a real OS process visible in Task Manager).
+- **`ChatService`** — llama-server/llama-box subprocess management + HTTP streaming inference. **Dual backend**: `llama-server.exe` for LLM/chat models, `llama-box.exe` for diffusion/image models (FLUX). Backend selected via `backend` param in `startModel()`. `generateImage({modelId?, prompt, callback})` calls `/v1/images/generations` on a running FLUX model. **Multi-model**: runs several instances concurrently, keyed by `modelId`, each with its own port + `Subprocess` + metrics. `startModel({modelId, backend?,...})` / `stopModel({modelId?})` (no modelId = stop all) / `chat({modelId?, prompt, callback})`. `getStatus`/`getMetrics` take an optional `modelId`: with it they return one model's object; without it they return `{status, models:[...]}` (one entry per running model). Per-model metrics include `memoryMB`, `cpuPercent`, `gpuMemoryMB`, `threads`, `handles`, `port`, and `pid`.
 - **`Subprocess`** — reusable child process manager (start/stop/monitor, process metrics).
 - **`ConfigService`** — manages `models.json`, detects file existence for model status.
 
@@ -114,4 +114,5 @@ tests/
 - `third_party/` (curl, zlib, webview, WebView2 SDK) is vendored — don't modify.
 - Frontend files copied to `build/Debug/` by CMake POST_BUILD.
 - llama-server binary goes next to the exe. Download from https://github.com/ggml-org/llama.cpp/releases
+- llama-box binary goes next to the exe for FLUX/image models. Download from https://github.com/gpustack/llama-box/releases
 - Model files go in `downloads/<modelId>/` subdirectory of exe location.

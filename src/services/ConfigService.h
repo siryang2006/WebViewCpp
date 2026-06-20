@@ -2,6 +2,7 @@
 
 #include "binding/CppObject.h"
 #include "WebViewWrapper.h"
+#include <curl/curl.h>
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
@@ -60,6 +61,59 @@ public:
             std::string dir = m_base_dir;
             wv->dispatch_task([id, model, dir, wv]() mutable {
                 if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
+
+                // 先验证下载地址并获取文件大小（curl HEAD 请求）
+                std::string url = model.value("download_url", "");
+                if (!url.empty()) {
+                    long long fileSize = -1;
+                    std::string curlErr;
+                    CURL* curl = curl_easy_init();
+                    if (curl) {
+                        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+                        curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+                        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+                        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+                        curl_easy_setopt(curl, CURLOPT_USERAGENT, "WebViewCpp/1.0");
+                        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+                        CURLcode res = curl_easy_perform(curl);
+                        if (res == CURLE_OK) {
+                            long http_code = 0;
+                            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+                            if (http_code >= 400) {
+                                curlErr = "HTTP " + std::to_string(http_code);
+                            } else {
+                                curl_off_t cl = 0;
+                                curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
+                                if (cl > 0) fileSize = static_cast<long long>(cl);
+                            }
+                        } else {
+                            curlErr = curl_easy_strerror(res);
+                        }
+                        curl_easy_cleanup(curl);
+                    } else {
+                        curlErr = "curl init failed";
+                    }
+                    if (!curlErr.empty()) {
+                        wv->reject(id, "下载地址无效: " + curlErr);
+                        return;
+                    }
+                    if (fileSize > 0) {
+                        model["size_bytes"] = fileSize;
+                        double gb = fileSize / (1024.0 * 1024.0 * 1024.0);
+                        if (gb >= 1.0) {
+                            char buf[32];
+                            snprintf(buf, sizeof(buf), "%.1f GB", gb);
+                            model["size"] = buf;
+                        } else {
+                            double mb = fileSize / (1024.0 * 1024.0);
+                            model["size"] = std::to_string(static_cast<int>(mb + 0.5)) + " MB";
+                        }
+                    }
+                } else {
+                    wv->reject(id, "下载地址为空");
+                    return;
+                }
+
                 std::string configPath = dir + "/models.json";
                 std::ifstream f(configPath);
                 if (!f) { wv->reject(id, "models.json not found"); return; }
@@ -94,6 +148,49 @@ public:
                         model["gguf_path"] = "downloads/" + newId + "/" + filename;
                     }
                     data["models"].push_back(model);
+                    std::ofstream of(configPath);
+                    of << data.dump(2);
+                    of.close();
+                    wv->resolve(id, data);
+                } catch (const std::exception& e) {
+                    wv->reject(id, std::string("failed: ") + e.what());
+                }
+            });
+        });
+
+        bind_async("updateModel", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
+            json updates = args.is_array() && args.size() > 0 ? args[0] : args;
+            std::string dir = m_base_dir;
+            wv->dispatch_task([id, updates, dir, wv]() {
+                if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
+                std::string targetId = updates.value("id", "");
+                if (targetId.empty()) { wv->reject(id, "id is required"); return; }
+                std::string configPath = dir + "/models.json";
+                std::ifstream f(configPath);
+                if (!f) { wv->reject(id, "models.json not found"); return; }
+                std::stringstream ss;
+                ss << f.rdbuf();
+                f.close();
+                try {
+                    json data = json::parse(ss.str());
+                    if (!data.contains("models") || !data["models"].is_array()) {
+                        wv->reject(id, "No models array");
+                        return;
+                    }
+                    bool found = false;
+                    for (auto& m : data["models"]) {
+                        if (m.value("id", "") == targetId) {
+                            for (auto it = updates.begin(); it != updates.end(); ++it) {
+                                m[it.key()] = it.value();
+                            }
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        wv->reject(id, "Model not found: " + targetId);
+                        return;
+                    }
                     std::ofstream of(configPath);
                     of << data.dump(2);
                     of.close();

@@ -35,6 +35,10 @@ ChatService::ChatService() {
         return getMetrics(args);
     });
 
+    bind_async("generateImage", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
+        generateImage(id, args, wv);
+    });
+
     bind_async("downloadServer", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
         downloadServer(id, args, wv);
     });
@@ -87,7 +91,7 @@ void ChatService::startModel(const std::string& id, const json& args, WebViewWra
     // wv由WebViewWrapper保证非空，直接存储
     m_wv = wv;
 
-    // 启动前先清理残留的 llama-server 进程，但放过已在 m_models 中的
+    // 启动前先清理残留的后端进程，但放过已在 m_models 中的
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         std::vector<int> managedPids;
@@ -95,6 +99,7 @@ void ChatService::startModel(const std::string& id, const json& args, WebViewWra
             if (rm->server) managedPids.push_back(rm->server->pid());
         }
         killOrphanedByName("llama-server.exe", managedPids);
+        killOrphanedByName("llama-box.exe", managedPids);
     }
 
     const json& p = unwrapArgs(args);
@@ -115,6 +120,7 @@ void ChatService::startModel(const std::string& id, const json& args, WebViewWra
     params.n_gpu_layers = p.value("ngl", -1);
     params.threads = p.value("threads", 4);
     params.flash_attention = p.value("flashAttn", true) ? 1 : 0;
+    params.backend = p.value("backend", "llama-server");
 
     // 该模型已在运行 → 幂等返回 running。
     {
@@ -131,12 +137,13 @@ void ChatService::startModel(const std::string& id, const json& args, WebViewWra
         }
     }
 
-    // 检查 llama-server 是否存在
-    std::string server_path = getServerPath();
+    // 检查后端二进制是否存在
+    std::string server_path = getServerPath(params.backend);
     if (!std::ifstream(server_path).good()) {
         json d = json::object();
+        std::string binary = (params.backend == "llama-box") ? "llama-box" : "llama-server";
         d["status"] = "need_download";
-        d["message"] = "llama-server not found";
+        d["message"] = binary + " not found";
         wv->resolve(id, CppObject::ok_result(d));
         return;
     }
@@ -171,7 +178,7 @@ void ChatService::startModel(const std::string& id, const json& args, WebViewWra
         wv->resolve(id, CppObject::ok_result(d));
     } else {
         wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR,
-            start_err.empty() ? "Failed to start llama-server" : ("Failed to start llama-server: " + start_err).c_str()));
+            (start_err.empty() ? "Failed to start backend" : ("Failed to start backend: " + start_err)).c_str()));
     }
 }
 
@@ -197,6 +204,7 @@ void ChatService::chat(const std::string& id, const json& args, WebViewWrapper* 
     std::string prompt = p.value("prompt", "");
     std::string callback = p.value("callback", "");
     std::string model_id = p.value("modelId", "");
+    std::string system_prompt = p.value("system", "");
 
     if (prompt.empty()) {
         wv->resolve(id, CppObject::error_result(ErrorCode::INVALID_ARGUMENTS, "prompt is required"));
@@ -227,12 +235,113 @@ void ChatService::chat(const std::string& id, const json& args, WebViewWrapper* 
     }
 
     json messages = json::array();
+    if (!system_prompt.empty()) {
+        messages.push_back({{"role", "system"}, {"content", system_prompt}});
+    }
     messages.push_back({{"role", "user"}, {"content", prompt}});
 
     if (!streamingRequest(port, messages, callback, wv)) {
         wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR, "Request failed"));
     } else {
         wv->resolve(id, CppObject::ok_result({{"status", "completed"}}));
+    }
+}
+
+void ChatService::generateImage(const std::string& id, const json& args, WebViewWrapper* wv) {
+    const json& p = unwrapArgs(args);
+
+    std::string prompt = p.value("prompt", "");
+    std::string callback = p.value("callback", "");
+    std::string model_id = p.value("modelId", "");
+
+    if (prompt.empty()) {
+        wv->resolve(id, CppObject::error_result(ErrorCode::INVALID_ARGUMENTS, "prompt is required"));
+        return;
+    }
+
+    // 查找运行中的 FLUX 模型
+    int port = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!model_id.empty()) {
+            auto it = m_models.find(model_id);
+            if (it != m_models.end() && it->second->running.load()) port = it->second->port;
+        } else {
+            for (auto& [mid, rm] : m_models) {
+                if (rm->running.load()) { port = rm->port; break; }
+            }
+        }
+    }
+
+    if (port == 0) {
+        wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR, "No model is running for image generation"));
+        return;
+    }
+
+    // 向 llama-box 发送图片生成请求
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR, "Failed to init curl"));
+        return;
+    }
+
+    json body = {
+        {"model", "flux-fill"},
+        {"prompt", prompt},
+        {"n", 1},
+        {"response_format", "b64_json"},
+        {"size", "1024x1024"}
+    };
+    std::string body_str = body.dump();
+    std::string url = "http://127.0.0.1:" + std::to_string(port) + "/v1/images/generations";
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body_str.c_str());
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    // 收集完整响应（非流式，图片生成返回完整 JSON）
+    std::string response_str;
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, [](char* ptr, size_t size, size_t nmemb, void* userdata) -> size_t {
+        auto* resp = static_cast<std::string*>(userdata);
+        resp->append(ptr, size * nmemb);
+        return size * nmemb;
+    });
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_str);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 120000L); // 图片生成可能较慢
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        std::string err = curl_easy_strerror(res);
+        wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR,
+            ("Image generation request failed: " + err).c_str()));
+        return;
+    }
+
+    try {
+        json resp = json::parse(response_str);
+        if (resp.contains("data") && !resp["data"].empty() && resp["data"][0].contains("b64_json")) {
+            std::string b64 = resp["data"][0]["b64_json"];
+            json d = json::object();
+            d["b64_json"] = b64;
+            d["prompt"] = prompt;
+            if (!callback.empty() && wv) {
+                wv->call_registered_js(callback, {{"b64_json", b64}, {"done", true}});
+            }
+            wv->resolve(id, CppObject::ok_result(d));
+        } else {
+            wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR,
+                "Unexpected image generation response format"));
+        }
+    } catch (...) {
+        wv->resolve(id, CppObject::error_result(ErrorCode::INTERNAL_ERROR,
+            "Failed to parse image generation response"));
     }
 }
 
@@ -354,8 +463,12 @@ std::string ChatService::getExeDir() {
     return (sep == std::string::npos) ? "." : exe_dir.substr(0, sep);
 }
 
-std::string ChatService::getServerPath() {
+std::string ChatService::getServerPath(const std::string& backend) {
     std::string exe_dir = getExeDir();
+
+    if (backend == "llama-box") {
+        return getLlamaBoxPath();
+    }
 
     // 优先从 llama-bin 子目录（CMake 复制位置）查找
     std::string server_path = exe_dir + "/llama-bin/llama-server.exe";
@@ -365,6 +478,11 @@ std::string ChatService::getServerPath() {
 
     // 回退：exe 同目录
     return exe_dir + "/llama-server.exe";
+}
+
+std::string ChatService::getLlamaBoxPath() {
+    std::string exe_dir = getExeDir();
+    return exe_dir + "/llama-box.exe";
 }
 
 int ChatService::getAvailablePort(const std::vector<int>& exclude) {
@@ -414,16 +532,24 @@ bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& p
 
     // 构建命令行参数
     std::ostringstream args;
-    args << "-m \"" << model_arg << "\"";
-    args << " -c " << params.ctx;
-    args << " -ngl " << params.n_gpu_layers;
-    args << " -t " << params.threads;
-    if (params.flash_attention) args << " --flash-attn 1";
-    if (params.thinking) args << " --reasoning-format auto";
-    args << " --host 127.0.0.1";
-    args << " --port " << port;
+    if (params.backend == "llama-box") {
+        args << "-m \"" << model_arg << "\"";
+        args << " --host 127.0.0.1";
+        args << " --port " << port;
+        args << " --images";
+        args << " -np 1";
+    } else {
+        args << "-m \"" << model_arg << "\"";
+        args << " -c " << params.ctx;
+        args << " -ngl " << params.n_gpu_layers;
+        args << " -t " << params.threads;
+        if (params.flash_attention) args << " --flash-attn 1";
+        if (params.thinking) args << " --reasoning-format auto";
+        args << " --host 127.0.0.1";
+        args << " --port " << port;
+    }
 
-    // 健康检查：轮询 /health 端点
+    // 健康检查：轮询 /health 端点（llama-box 也支持 /health）
     auto healthCheck = [port]() -> bool {
         CURL* curl = curl_easy_init();
         if (!curl) return false;
@@ -438,10 +564,11 @@ bool ChatService::startServer(const std::string& gguf_path, const LlamaParams& p
         return res == CURLE_OK && code == 200;
     };
 
-    // 工作目录设为 exe 目录：保证 gguf 相对路径、DLL 依赖（llama-bin 下的 ggml*.dll）
-    // 等都能正确解析。健康检查放宽到 30s —— 大模型加载 + warmup 可能较慢。
+    // 工作目录设为 exe 目录：保证 gguf 相对路径、DLL 依赖等都能正确解析。
+    // llama-box 不使用子目录，直接找 exe 同目录。
     auto server = std::make_unique<Subprocess>();
-    bool ok = server->start(getServerPath(), args.str(), exe_dir, healthCheck, 30000, nullptr);
+    int health_timeout = (params.backend == "llama-box") ? 60000 : 30000; // FLUX 模型加载更慢
+    bool ok = server->start(getServerPath(params.backend), args.str(), exe_dir, healthCheck, health_timeout, nullptr);
 
     if (!ok) {
         std::string sub_err = server->lastError();

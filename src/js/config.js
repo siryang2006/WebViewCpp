@@ -43,21 +43,31 @@
 
   function getConfigParams() {
     var ctxIdx = parseInt($('configCtxSlider').value);
+    var m = findModel(configModelId);
+    var isFlux = m && m.type === 'FLUX-Fill';
     return {
       ctx: CTX_STEPS[ctxIdx],
       ngl: parseInt($('configNglSlider').value),
       threads: parseInt($('configThreadsSlider').value),
       flashAttn: configFlashAttn,
-      thinking: configThinking
+      thinking: configThinking,
+      backend: isFlux ? 'llama-box' : 'llama-server'
     };
   }
 
-  // 实时预览 llama-server 命令行
+  // 实时预览 llama-server/llama-box 命令行
   function updateCmdPreview() {
     var p = getConfigParams();
-    var parts = ['llama-server', '-m <model>', '-c ' + p.ctx, '-ngl ' + p.ngl, '-t ' + p.threads];
-    if (p.flashAttn) parts.push('-fa');
-    if (p.thinking) parts.push('--reasoning-format auto');
+    var m = findModel(configModelId);
+    var isFlux = m && m.type === 'FLUX-Fill';
+    var parts;
+    if (isFlux) {
+      parts = ['llama-box', '-m <model>', '--images', '--host 127.0.0.1'];
+    } else {
+      parts = ['llama-server', '-m <model>', '-c ' + p.ctx, '-ngl ' + p.ngl, '-t ' + p.threads];
+      if (p.flashAttn) parts.push('-fa');
+      if (p.thinking) parts.push('--reasoning-format auto');
+    }
     $('configCmdPreview').textContent = parts.join(' ');
   }
 
@@ -106,6 +116,7 @@
     window.chatService.startModel({
       modelId: m.id,
       ggufPath: m.gguf_path,
+      backend: p.backend,
       ctx: p.ctx,
       ngl: p.ngl,
       threads: p.threads,
@@ -113,7 +124,11 @@
       thinking: p.thinking
     }).then(function(r) {
       if (r && r.ok && r.data && r.data.status === 'need_download') {
-        alert('请先下载 llama-server.exe 放到 exe 同目录\n下载地址: https://github.com/ggml-org/llama.cpp/releases');
+        var binary = (p.backend === 'llama-box') ? 'llama-box.exe' : 'llama-server.exe';
+        var url = (p.backend === 'llama-box')
+          ? 'https://github.com/gpustack/llama-box/releases'
+          : 'https://github.com/ggml-org/llama.cpp/releases';
+        alert('请先下载 ' + binary + ' 放到 exe 同目录\n下载地址: ' + url);
         m.status = 'downloaded';
         AppBus.emit('models:changed');
       } else if (r && r.ok) {

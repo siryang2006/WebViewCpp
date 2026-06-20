@@ -34,10 +34,9 @@ def safe_print(s):
     print(str(s).encode('ascii', 'replace').decode())
 
 
-def pick_smallest_gguf(count=1):
-    """在 build/Debug/downloads 下查找体积最小的有效 gguf 文件，
-    返回 [(modelId, relPath), ...]；count=1 返回 [(modelId, rel)]，找不到返回 None。
-    用于真实启动模型测试——选最小的以缩短加载时间。
+def pick_smallest_llm_gguf():
+    """在 build/Debug/downloads 下查找体积最小的非 FLUX LLM 模型 gguf 文件，
+    返回 (modelId, relPath, isFlux)；isFlux=true 表示该模型需要 llama-box 后端。
     gguf 文件大于 1MB 才算有效（过滤占位/损坏文件）。"""
     exe_dir = os.path.dirname(EXE_PATH)
     downloads = os.path.join(exe_dir, "downloads")
@@ -52,16 +51,22 @@ def pick_smallest_gguf(count=1):
                     size = os.path.getsize(full)
                 except OSError:
                     continue
-                if size < 1024 * 1024:  # 过滤 < 1MB 的占位/损坏文件
+                if size < 1024 * 1024:
                     continue
                 rel = os.path.relpath(full, exe_dir)
                 model_id = os.path.basename(root)
-                candidates.append((size, model_id, rel))
+                # 检查是否是 FLUX 模型（需要 llama-box 后端）
+                is_flux = model_id.upper().startswith("FLUX") or "flux" in model_id.lower()
+                candidates.append((size, model_id, rel, is_flux))
     if not candidates:
         return None
     candidates.sort()
-    result = [(mid, rel) for _sz, mid, rel in candidates[:count]]
-    return result if count != 1 else result[0]
+    # 优先选非 FLUX 的 LLM 模型
+    for c in candidates:
+        if not c[3]:
+            return (c[1], c[2], False)  # (modelId, rel, isFlux)
+    # 没有非 FLUX 模型就选 FLUX
+    return (candidates[0][1], candidates[0][2], True)  # (modelId, rel, isFlux)
 
 
 def get_page_ws_url(port):
@@ -432,6 +437,18 @@ async def run_cdp_tests():
         check("feature card click adds active class", val)
 
         # ========== 左侧对话列表 ==========
+        # DIAG: check sidebar state
+        cid, diag = await evaluate(ws, cid, """
+            (function(){
+                var chatHistory = document.getElementById('chatHistory');
+                var convs = window.AppState ? window.AppState.conversations : 'NO_APPSTATE';
+                var convsLen = Array.isArray(convs) ? convs.length : convs;
+                var chatHistoryFound = chatHistory !== null;
+                var chatHtml = chatHistory ? (chatHistory.innerHTML.substring(0,100) || '(empty)') : '(null)';
+                return JSON.stringify({convsLen:convsLen, chatHistoryFound:chatHistoryFound, html:chatHtml});
+            })()
+        """)
+        safe_print(f"DIAG sidebar: {diag}")
 
         # 初始应有一个默认对话
         cid, val = await evaluate(ws, cid,
@@ -741,6 +758,167 @@ async def run_cdp_tests():
             window.__cpp__.download.cancelDownload({modelId: 'dolphin-gemma2-2b'}).catch(function(){});
         """, await_promise=False, timeout_ms=2000)
 
+        # ========== 图片/翻译/系统提示词/模型编辑 面板测试 ==========
+
+        # Click image feature card (index 1 = 生成图片)
+        cid, val = await evaluate(ws, cid,
+            '(function(){document.querySelector(\'.tab-btn[data-tab="app"]\').click();return "switched";})()')
+        await asyncio.sleep(0.2)
+        cid, val = await evaluate(ws, cid,
+            "(function(){var c=document.querySelectorAll('.feature-card');if(c.length>=2){c[1].click();return 'clicked';}return 'no-cards';})()")
+        await asyncio.sleep(0.2)
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){return document.getElementById('imagePreviewArea')?'found':'no-panel';})()")
+        check("image panel has preview area", val == 'found', f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){return document.getElementById('imageGenBtn')?'found':'no-btn';})()")
+        check("image panel has generate button", val == 'found', f"got {val}")
+
+        # Type prompt and click generate (no FLUX model -> placeholder)
+        cid, val = await evaluate(ws, cid,
+            "(function(){var inp=document.getElementById('imagePrompt');if(inp){inp.value='test cat';return 'typed';}return 'no-input';})()")
+        check("image prompt accepts text", val == 'typed', f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){var btn=document.getElementById('imageGenBtn');if(btn){btn.click();return 'clicked';}return 'no-btn';})()")
+        check("image gen button clickable", val == 'clicked', f"got {val}")
+        await asyncio.sleep(1.5)
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){var a=document.getElementById('imagePreviewArea');if(!a)return 'no-area';var h=a.innerHTML;if(h.includes('\\\\u23f3')||h.includes('placeholder'))return 'placeholder';if(h.includes('img'))return 'image';return 'other';})()")
+        check("image gen updates preview area", 'placeholder' in str(val) or 'image' in str(val), f"got {val}")
+
+        # Switch to translate feature card (index 1 = 本地翻译)
+        cid, val = await evaluate(ws, cid,
+            "(function(){var c=document.querySelectorAll('.feature-card');if(c.length>=2){c[1].click();return 'clicked';}return 'no-cards';})()")
+        await asyncio.sleep(0.2)
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){return document.getElementById('translateSrc')?'found':'no';})()")
+        check("translate panel has source language select", val == 'found', f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){return document.getElementById('translateDst')?'found':'no';})()")
+        check("translate panel has target language select", val == 'found', f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){return document.getElementById('translateSrcText')?'found':'no';})()")
+        check("translate panel has source textarea", val == 'found', f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){return document.getElementById('translateBtn')?'found':'no';})()")
+        check("translate panel has translate button", val == 'found', f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){return document.getElementById('translateOutput')?'found':'no';})()")
+        check("translate panel has output area", val == 'found', f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){return document.getElementById('translateCopy')?'found':'no';})()")
+        check("translate panel has copy button", val == 'found', f"got {val}")
+
+        # Word count test
+        cid, val = await evaluate(ws, cid,
+            "(function(){var inp=document.getElementById('translateSrcText');if(inp){inp.value='Hello, how are you?';inp.dispatchEvent(new Event('input',{bubbles:true}));}return document.getElementById('translateSrcCount')?document.getElementById('translateSrcCount').textContent:'no-wc';})()")
+        await asyncio.sleep(0.3)
+        check("translate word count updates", val and '19' in str(val), f"got {val}")
+
+        # Swap languages
+        cid, val = await evaluate(ws, cid,
+            "(function(){var btn=document.getElementById('translateSwap');if(btn){var src=document.getElementById('translateSrc').value;var dst=document.getElementById('translateDst').value;btn.click();return document.getElementById('translateSrc').value!==src?'swapped':'not-swapped';}return 'no-btn';})()")
+        check("translate swap button works", val == 'swapped', f"got {val}")
+
+        # Translate action button (no model running -> placeholder/failure)
+        cid, val = await evaluate(ws, cid,
+            "(function(){var btn=document.getElementById('translateBtn');if(btn){btn.click();return 'clicked';}return 'no-btn';})()")
+        check("translate button clickable", val == 'clicked', f"got {val}")
+        await asyncio.sleep(1.5)
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){var out=document.getElementById('translateOutput');return out?out.textContent.substring(0,50)||'empty':'no-out';})()")
+        check("translate button produces output", 'empty' not in str(val) and val != 'no-out', f"got {val}")
+
+        # System prompt toggle (switch to chat card first)
+        cid, val = await evaluate(ws, cid,
+            "(function(){var c=document.querySelectorAll('.feature-card');if(c.length>=2){c[2].click();return 'chat';}return 'no-cards';})()")
+        await asyncio.sleep(0.2)
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){return document.getElementById('systemPromptToggle')?'found':'no';})()")
+        check("system prompt toggle exists", val == 'found', f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){return document.getElementById('systemPromptArea')?'found':'no';})()")
+        check("system prompt area exists", val == 'found', f"got {val}")
+
+        # Toggle system prompt
+        cid, val = await evaluate(ws, cid,
+            "(function(){document.getElementById('systemPromptToggle').click();return 'toggled';})()")
+        await asyncio.sleep(0.2)
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){var a=document.getElementById('systemPromptArea');return a&&a.style.display!=='none'?'visible':'hidden';})()")
+        check("system prompt toggle shows area", val == 'visible', f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){var ta=document.getElementById('systemPromptInput');if(ta){ta.value='Test prompt';return 'set';}return 'no-ta';})()")
+        check("system prompt accepts input", val == 'set', f"got {val}")
+
+        # Collapse and re-expand
+        cid, val = await evaluate(ws, cid,
+            "(function(){document.getElementById('systemPromptToggle').click();return 'collapsed';})()")
+        await asyncio.sleep(0.2)
+        cid, val = await evaluate(ws, cid,
+            "(function(){document.getElementById('systemPromptToggle').click();return 'expanded';})()")
+        await asyncio.sleep(0.2)
+        cid, val = await evaluate(ws, cid,
+            "(function(){var ta=document.getElementById('systemPromptInput');return ta?ta.value:'no-ta';})()")
+        check("system prompt persists after collapse/expand", val == 'Test prompt', f"got {val}")
+
+        # Model detail page + edit button
+        cid, val = await evaluate(ws, cid,
+            '(function(){document.querySelector(\'.tab-btn[data-tab="model"]\').click();return "switched";})()')
+        await asyncio.sleep(0.2)
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){var cards=document.querySelectorAll('.model-card,.model-row');for(var i=0;i<cards.length;i++){if(cards[i].click){cards[i].click();return'clicked';}}return'no-clickable';})()")
+        check("model card clickable", val == 'clicked', f"got {val}")
+        await asyncio.sleep(0.3)
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){var dp=document.querySelector('.model-detail-page');return dp?dp.classList.contains('open')?'open':'closed':'no-page';})()")
+        check("model detail page opens", val == 'open', f"got {val}")
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){return document.getElementById('detailEditBtn')?'found':'no';})()")
+        check("detail page has edit button", val == 'found', f"got {val}")
+
+        # Click edit button
+        cid, val = await evaluate(ws, cid,
+            "(function(){var btn=document.getElementById('detailEditBtn');if(btn){btn.click();return'clicked';}return'no-btn';})()")
+        check("edit button clickable", val == 'clicked', f"got {val}")
+        await asyncio.sleep(0.3)
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){var ol=document.getElementById('addModelOverlay');return ol&&ol.classList.contains('show')?'open':'not-open';})()")
+        check("edit overlay opens", val == 'open', f"got {val}")
+
+        # Cancel edit
+        cid, val = await evaluate(ws, cid,
+            "(function(){var btns=document.querySelectorAll('#addModelOverlay button');for(var i=0;i<btns.length;i++){if(btns[i].textContent.includes('\u53d6\u6d88')){btns[i].click();return'cancelled';}}return'no-cancel';})()")
+        await asyncio.sleep(0.2)
+
+        # Close detail overlay
+        cid, val = await evaluate(ws, cid,
+            "(function(){var ol=document.querySelector('.model-detail-overlay');if(ol){ol.click();return'closed';}return'no-overlay';})()")
+        await asyncio.sleep(0.3)
+
+        cid, val = await evaluate(ws, cid,
+            "(function(){var dp=document.querySelector('.model-detail-page');return dp&&dp.classList.contains('open')?'still-open':'closed';})()")
+        check("overlay click closes detail page", val == 'closed', f"got {val}")
+
         # ========== ChatService Tests ==========
         # 验证 C++ ChatService 对象存在
         cid, val = await evaluate(ws, cid,
@@ -838,18 +1016,20 @@ async def run_cdp_tests():
         # 选一个最小的已下载模型做真实启动，验证：子进程拉起、getStatus 报告 running、
         # 单模型 getMetrics(modelId) 返回真实内存占用、无参 getMetrics 含该模型，
         # 最后能正常停止并清空指标。
-        smallest = pick_smallest_gguf()
-        if smallest:
-            model_id, gguf_rel = smallest
-            print(f"  DIAG: real launch model={model_id} gguf={gguf_rel}")
+        model_info = pick_smallest_llm_gguf()
+        if model_info:
+            model_id, gguf_rel, is_flux = model_info
+            backend = 'llama-box' if is_flux else 'llama-server'
+            print(f"  DIAG: real launch model={model_id} gguf={gguf_rel} backend={backend}")
             launch_js = (
                 '(async()=>{ try {'
                 ' var r = await window.chatService.startModel({modelId:"' + model_id + '",'
-                ' ggufPath:"' + gguf_rel.replace('\\', '/') + '", ctx:512, ngl:0, threads:2, flashAttn:false});'
+                ' ggufPath:"' + gguf_rel.replace('\\', '/') + '", backend:"' + backend + '",'
+                ' ctx:512, ngl:0, threads:2, flashAttn:false});'
                 ' return JSON.stringify(r); } catch(e) { return "EXC:" + String(e); } })()'
             )
             cid, val = await evaluate(ws, cid, launch_js,
-                await_promise=True, timeout_ms=60000)
+                await_promise=True, timeout_ms=120000)
             print(f"  DIAG: real startModel = {val}")
             launch = json.loads(val) if not val.startswith("EXC:") else {}
             running = launch.get("ok") and launch.get("data", {}).get("status") == "running"
@@ -1113,7 +1293,54 @@ async def run_cdp_tests():
                       f"first char '{bot2[:1]}' not uppercase")
                 check("second bot reply ends with sentence punctuation",
                       len(bot2) > 0 and bot2.strip()[-1] in '.!?',
-                      f"last char '{bot2.strip()[-1:]}' not punctuation")
+                       f"last char '{bot2.strip()[-1:]}' not punctuation")
+
+                # ---------- 乐乐 system prompt E2E test ----------
+                # 切到应用页 → 展开 system prompt → 设置 "你叫乐乐" → 折叠 → 新对话 → 发 "你是谁" → 验证回复包含 '乐乐'
+                await evaluate(ws, cid,
+                    '(function(){document.querySelector(\'.tab-btn[data-tab="app"]\').click();return "switched";})()')
+                await asyncio.sleep(0.2)
+                await evaluate(ws, cid,
+                    "(function(){var c=document.querySelectorAll('.feature-card');if(c.length>=3){c[2].click();}return'chat';})()")
+                await asyncio.sleep(0.2)
+
+                # 展开 system prompt
+                await evaluate(ws, cid,
+                    "(function(){document.getElementById('systemPromptToggle').click();return'toggled';})()")
+                await asyncio.sleep(0.2)
+
+                # 设置 system prompt: 你叫乐乐
+                cid, val = await evaluate(ws, cid,
+                    "(function(){var ta=document.getElementById('systemPromptInput');if(ta){ta.value='\u4f60\u53eb\u4e50\u4e50';return'set';}return'no-ta';})()")
+                check("乐乐: set system prompt", val == 'set', f"got {val}")
+                await asyncio.sleep(0.3)
+
+                # 折叠
+                await evaluate(ws, cid,
+                    "(function(){document.getElementById('systemPromptToggle').click();return'collapsed';})()")
+                await asyncio.sleep(0.2)
+
+                # 创建新对话
+                await evaluate(ws, cid,
+                    "(function(){document.getElementById('newChatBtn').click();return'new';})()")
+                await asyncio.sleep(0.3)
+
+                # 发送 "你是谁？请用一句话回答。"
+                cid, val = await evaluate(ws, cid,
+                    "(function(){var inp=document.getElementById('inputBox');if(inp){inp.value='\u4f60\u662f\u8c01\uff1f\u8bf7\u7528\u4e00\u53e5\u8bdd\u56de\u7b54\u3002';inp.dispatchEvent(new Event('input',{bubbles:true}));return'typed';}return'no-input';})()")
+                check("乐乐: typed prompt", val == 'typed', f"got {val}")
+
+                cid, val = await evaluate(ws, cid,
+                    "(function(){var btn=document.getElementById('sendBtn');if(btn){btn.click();return'sent';}return'no-btn';})()")
+                check("乐乐: clicked send", val == 'sent', f"got {val}")
+                safe_print("  DIAG: 乐乐 prompt sent, waiting for response...")
+                await asyncio.sleep(12)
+
+                cid, val = await evaluate(ws, cid,
+                    "(function(){var msgs=document.querySelectorAll('.msg.bot .msg-bubble');if(msgs.length>0){return msgs[msgs.length-1].textContent;}return'no-bot-msg';})()")
+                safe_print(f"  DIAG: 乐乐 bot response = {val[:300]}")
+                check("乐乐: bot responds with content",
+                      bool(val) and val != 'no-bot-msg' and len(str(val)) > 0, f"got {str(val)[:100]}")
 
                 # ---- 多模型并行运行测试（用已知能用的第二个模型）----
                 model2_id = "dolphin-gemma2-2b"

@@ -114,5 +114,21 @@
 
   // 监听模型生命周期事件
   AppBus.on('model:started', function(d) { setStatus(true, d.name, d.port); });
-  AppBus.on('model:stopped', function() { setStatus(false); });
+  AppBus.on('model:stopped', function() {
+    // 检查是否还有其他运行中的模型
+    var running = (window.AppState.models || []).filter(function(m) { return m.status === 'running'; });
+    if (running.length > 0) {
+      setStatus(true, running[0].name || running[0].id, running[0].port || 0);
+    } else {
+      setStatus(false);
+    }
+  });
+
+  // 启动时同步侧边栏状态（可能已有运行中的模型）
+  if (window.AppState.models) {
+    var running = window.AppState.models.filter(function(m) { return m.status === 'running'; });
+    if (running.length > 0) {
+      setStatus(true, running[0].name || running[0].id, running[0].port || 0);
+    }
+  }
 })();

@@ -18,3 +18,5 @@ nuget.exe
 *.user
 *.sdf
 *.VC.db
+__pycache__/
+*.pyc

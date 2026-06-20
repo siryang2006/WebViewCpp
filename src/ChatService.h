@@ -30,6 +30,7 @@ public:
         int threads = 4;          // CPU threads
         int flash_attention = 1;   // enable flash attention
         bool thinking = false;     // enable thinking mode
+        std::string backend = "llama-server";  // "llama-server" or "llama-box"
     };
 
     ChatService();
@@ -49,6 +50,8 @@ public:
     json getStatus(const json& args);
     // 获取资源占用。args: {modelId?}。带 modelId 返回单模型；不带返回 {models:[...]}。
     json getMetrics(const json& args);
+    // 图片生成（FLUX/llama-box）。args: {modelId?, prompt}
+    void generateImage(const std::string& id, const json& args, WebViewWrapper* wv);
     // 下载 llama-server 二进制
     void downloadServer(const std::string& id, const json& args, WebViewWrapper* wv);
 
@@ -63,7 +66,8 @@ private:
         std::atomic<bool> running{false};
     };
 
-    std::string getServerPath();
+    std::string getServerPath(const std::string& backend = "llama-server");
+    std::string getLlamaBoxPath();
     std::string getExeDir();
     int getAvailablePort(const std::vector<int>& exclude);
 

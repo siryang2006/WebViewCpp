@@ -120,6 +120,10 @@
           <div class="feature-card-icon">💬</div>
           <div class="feature-card-label">智能对话</div>
         </div>
+        <div class="feature-card" data-feature="translate">
+          <div class="feature-card-icon">🌐</div>
+          <div class="feature-card-label">本地翻译</div>
+        </div>
         <div class="feature-card" data-feature="image">
           <div class="feature-card-icon">🖼️</div>
           <div class="feature-card-label">生成图片</div>
@@ -127,10 +131,6 @@
         <div class="feature-card" data-feature="virtual">
           <div class="feature-card-icon">🎭</div>
           <div class="feature-card-label">虚拟人物</div>
-        </div>
-        <div class="feature-card" data-feature="translate">
-          <div class="feature-card-icon">🌐</div>
-          <div class="feature-card-label">本地翻译</div>
         </div>
         <div class="feature-card" data-feature="podcast">
           <div class="feature-card-icon">🎙️</div>
@@ -194,24 +194,112 @@
         <div class="chat-area" id="chatArea" style="display:none"></div>
       </div>
 
-      <!-- 输入区 -->
+      <!-- 输入区 - 多模工作模式 -->
       <div class="input-area">
+        <!-- 共享工具栏 -->
         <div class="input-toolbar">
+          <div class="chat-model-picker">
+            <span class="chat-model-picker-label">🧠</span>
+            <select class="chat-model-select" id="chatModelSelect" title="选择使用的模型">
+              <option value="">无运行模型</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 智能对话 -->
+        <div class="input-panel active" data-feature="chat">
           <div class="mode-selector">
             <button class="mode-btn active" data-mode="balance">Auto · 平衡模式</button>
             <button class="mode-btn" data-mode="speed">速度优先</button>
             <button class="mode-btn" data-mode="quality">质量优先</button>
           </div>
-          <div class="chat-model-picker">
-            <span class="chat-model-picker-label">🧠</span>
-            <select class="chat-model-select" id="chatModelSelect" title="选择对话使用的模型">
-              <option value="">无运行模型</option>
-            </select>
+          <div class="input-wrapper">
+            <textarea class="input-box" id="inputBox" rows="1" placeholder="输入你想问的问题…" autofocus></textarea>
+            <button class="tool-btn" id="systemPromptToggle" title="设置系统提示词">🧠</button>
+            <button class="send-btn" id="sendBtn" title="发送">➤</button>
+          </div>
+          <div class="system-prompt-area" id="systemPromptArea" style="display:none">
+            <div class="system-prompt-header">
+              <span>🧠 系统提示词</span>
+              <span class="system-prompt-hint">设定模型的行为和回答风格</span>
+            </div>
+            <textarea class="system-prompt-input" id="systemPromptInput" rows="3" placeholder="例如：你是一个乐于助人的 AI 助手，请用中文回答用户的问题。"></textarea>
           </div>
         </div>
-        <div class="input-wrapper">
-          <textarea class="input-box" id="inputBox" rows="1" placeholder="输入你想问的问题…" autofocus></textarea>
-          <button class="send-btn" id="sendBtn" title="发送">➤</button>
+
+        <!-- 本地翻译 -->
+        <div class="input-panel" data-feature="translate">
+          <div class="translate-toolbar">
+            <select class="translate-lang-select" id="translateSrc">
+              <option value="auto">🌐 自动检测</option>
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+              <option value="ko">한국어</option>
+              <option value="fr">Français</option>
+              <option value="de">Deutsch</option>
+              <option value="es">Español</option>
+              <option value="pt">Português</option>
+              <option value="ru">Русский</option>
+            </select>
+            <button class="swap-btn" id="translateSwap" title="交换语言">⇄</button>
+            <select class="translate-lang-select" id="translateDst">
+              <option value="zh" selected>中文</option>
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+              <option value="ko">한국어</option>
+              <option value="fr">Français</option>
+              <option value="de">Deutsch</option>
+              <option value="es">Español</option>
+              <option value="pt">Português</option>
+              <option value="ru">Русский</option>
+            </select>
+            <button class="translate-action-btn" id="translateBtn">🌐 翻译</button>
+          </div>
+          <div class="translate-panels">
+            <div class="translate-panel translate-original">
+              <div class="translate-panel-header">
+                <span class="translate-panel-label">原文</span>
+                <span class="translate-panel-word-count" id="translateSrcCount">0 字</span>
+              </div>
+              <textarea class="translate-textarea" id="translateSrcText" placeholder="输入要翻译的文本…"></textarea>
+            </div>
+            <div class="translate-panel translate-result">
+              <div class="translate-panel-header">
+                <span class="translate-panel-label">译文</span>
+                <button class="translate-copy-btn" id="translateCopy" title="复制译文">📋</button>
+              </div>
+              <div class="translate-output" id="translateOutput">
+                <span class="translate-output-placeholder">翻译结果将显示在这里</span>
+          </div>
+          <!-- 翻译 prompt 模板（可编辑） -->
+          <div class="translate-template-area" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+              <button class="tool-btn" id="translateTemplateToggle" title="编辑翻译提示模板" style="font-size:12px;padding:2px 8px;">📝 翻译模板</button>
+              <span style="font-size:11px;color:var(--text-muted);">使用 {source_text} 和 {target_lang} 作为占位符</span>
+            </div>
+            <div id="translateTemplateArea" style="display:none;">
+              <textarea class="input-box" id="translateTemplateInput" rows="2" placeholder="翻译 prompt 模板…" style="font-size:12px;padding:6px 10px;">将以下文本翻译为 {target_lang}，注意只需要输出翻译后的结果，不要额外解释：\n\n{source_text}</textarea>
+            </div>
+          </div>
+        </div>
+          </div>
+        </div>
+
+        <!-- 生成图片 -->
+        <div class="input-panel" data-feature="image">
+          <div class="input-wrapper">
+            <textarea class="input-box" id="imagePrompt" rows="1" placeholder="描述你想生成的图片…"></textarea>
+            <input type="file" accept="image/*" id="imageUploadInput" style="display:none">
+            <button class="tool-btn" id="imageUploadBtn" title="上传参考图片">📎</button>
+            <button class="send-btn" id="imageGenBtn" title="生成">🎨</button>
+          </div>
+          <div class="image-preview-area" id="imagePreviewArea">
+            <div class="image-preview-placeholder">
+              <span class="image-preview-placeholder-icon">🖼️</span>
+              <span class="image-preview-placeholder-text">生成的图片将显示在这里</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -277,6 +365,7 @@
 </div>
 
 <!-- 模型详情页（右侧滑出） -->
+<div class="model-detail-overlay" id="detailOverlay">
 <div class="model-detail-page" id="detailPage">
   <div class="detail-header">
     <button class="detail-back-btn" id="detailBackBtn">←</button>
@@ -361,14 +450,16 @@
 
   <div class="detail-footer">
     <button class="btn btn-ghost" id="detailCloseBtn2">取消</button>
+    <button class="btn btn-ghost" id="detailEditBtn" style="margin-right:8px;">✏️ 编辑</button>
     <button class="btn btn-green" id="detailActionBtn">▶ 启动</button>
   </div>
+</div>
 </div>
 
 <!-- 添加模型弹窗 -->
 <div class="config-overlay" id="addModelOverlay">
   <div class="config-panel" style="max-width:520px;">
-    <div class="config-title">➕ 添加模型</div>
+    <div class="config-title" id="addModelTitle">➕ 添加模型</div>
     <div class="config-row">
       <div class="config-label-group">
         <div class="config-label">模型 ID</div>
@@ -408,7 +499,7 @@
       </div>
       <div style="flex:1;min-width:80px;">
         <div class="config-label">参数量</div>
-        <input class="add-model-input" id="addModelParam" placeholder="7" type="number" step="0.1">
+        <input class="add-model-input" id="addModelParam" placeholder="7" type="number" step="0.1" style="width:80px;">
       </div>
     </div>
     <div class="config-row" style="display:flex;gap:12px;flex-wrap:wrap;">

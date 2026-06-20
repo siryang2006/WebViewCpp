@@ -17,11 +17,29 @@
   });
 })();
 
-/* ---- 功能卡片切换 ---- */
+/* ---- 功能卡片切换 + 输入面板联动 ---- */
+function switchFeature(feature) {
+  var panels = document.querySelectorAll('.input-panel');
+  var found = false;
+  for (var i = 0; i < panels.length; i++) {
+    var match = panels[i].dataset.feature === feature;
+    panels[i].classList.toggle('active', match);
+    if (match) found = true;
+  }
+  // 无对应面板时回退到聊天
+  if (!found) {
+    for (var j = 0; j < panels.length; j++) {
+      panels[j].classList.toggle('active', panels[j].dataset.feature === 'chat');
+    }
+  }
+  document.querySelectorAll('.feature-card').forEach(function(c) {
+    c.classList.toggle('active', c.dataset.feature === feature);
+  });
+}
+
 document.querySelectorAll('.feature-card').forEach(function(card) {
   card.addEventListener('click', function() {
-    document.querySelectorAll('.feature-card').forEach(function(c) { c.classList.remove('active'); });
-    card.classList.add('active');
+    switchFeature(card.dataset.feature);
   });
 });
 
@@ -59,8 +77,45 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
       $('modelPage').classList.remove('active');
       document.querySelector('.feature-cards-section').style.display = '';
       document.querySelector('.content-area').style.display = '';
+      // 切到应用页时刷新模型下拉（可能其他模型已启动/停止）
+      if (window.refreshModelSelect) window.refreshModelSelect();
     }
   });
+});
+
+/* ---- 翻译：交换语言 ---- */
+$('translateSwap').addEventListener('click', function() {
+  var src = $('translateSrc');
+  var dst = $('translateDst');
+  var tmp = src.value;
+  // 如果源是 auto，交换后目标保留原值（dst 无 auto 选项）
+  if (tmp === 'auto') return;
+  src.value = dst.value;
+  dst.value = tmp;
+});
+
+/* ---- 翻译：复制结果 ---- */
+$('translateCopy').addEventListener('click', function() {
+  var output = $('translateOutput');
+  var text = output.textContent;
+  if (text && text !== '翻译结果将显示在这里') {
+    navigator.clipboard.writeText(text).catch(function() {});
+  }
+});
+
+/* ---- 图片上传 ---- */
+$('imageUploadBtn').addEventListener('click', function() {
+  $('imageUploadInput').click();
+});
+$('imageUploadInput').addEventListener('change', function() {
+  var file = this.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var area = $('imagePreviewArea');
+    area.innerHTML = '<img src="' + e.target.result + '" alt="上传的参考图片">';
+  };
+  reader.readAsDataURL(file);
 });
 
 // 初始显示模型页

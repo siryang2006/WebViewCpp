@@ -15,6 +15,7 @@
 
   var isTyping = false;
   var convIdCounter = 0;
+  var systemPromptVisible = false;
 
   // 取当前运行中的模型列表（status === 'running'）
   function runningModels() {
@@ -43,11 +44,52 @@
     var sel = stillValid ? prev : running[0].id;
     modelSelect.value = sel;
     window.AppState.selectedModelId = sel;
+    loadSystemPrompt(sel);
   }
 
   if (modelSelect) {
     modelSelect.addEventListener('change', function() {
       window.AppState.selectedModelId = modelSelect.value;
+      loadSystemPrompt(modelSelect.value);
+    });
+  }
+
+  // 加载当前选中模型的系统提示词
+  function loadSystemPrompt(modelId) {
+    var spInput = $('systemPromptInput');
+    if (!spInput) return;
+    if (!modelId) { spInput.value = ''; return; }
+    var models = window.AppState.models || [];
+    for (var i = 0; i < models.length; i++) {
+      if (models[i].id === modelId && models[i].systemPrompt) {
+        spInput.value = models[i].systemPrompt;
+        return;
+      }
+    }
+    spInput.value = '';
+  }
+
+  // 保存系统提示词到当前模型
+  function saveSystemPrompt() {
+    var spInput = $('systemPromptInput');
+    var modelId = window.AppState.selectedModelId;
+    if (!spInput || !modelId) return;
+    var models = window.AppState.models || [];
+    for (var i = 0; i < models.length; i++) {
+      if (models[i].id === modelId) {
+        models[i].systemPrompt = spInput.value;
+        break;
+      }
+    }
+  }
+
+  // 系统提示词自动保存
+  var spTimer = null;
+  var spInput = $('systemPromptInput');
+  if (spInput) {
+    spInput.addEventListener('input', function() {
+      if (spTimer) clearTimeout(spTimer);
+      spTimer = setTimeout(saveSystemPrompt, 500);
     });
   }
 
@@ -259,7 +301,16 @@
     var modelId = window.AppState.selectedModelId;
     var hasRunning = runningModels().some(function(m) { return m.id === modelId; });
     if (modelId && hasRunning && window.chatService) {
-      await streamChat(text, modelId);
+      // 取当前模型的系统提示词
+      var sp = '';
+      var models = window.AppState.models || [];
+      for (var i = 0; i < models.length; i++) {
+        if (models[i].id === modelId && models[i].systemPrompt) {
+          sp = models[i].systemPrompt;
+          break;
+        }
+      }
+      await streamChat(text, modelId, sp);
     } else {
       addTyping();
       await new Promise(function(r) { setTimeout(r, 400); });
@@ -270,7 +321,7 @@
     renderSidebar();
   }
 
-  function streamChat(prompt, modelId) {
+  function streamChat(prompt, modelId, systemPrompt) {
     isTyping = true;
     ensureChatVisible();
 
@@ -292,7 +343,7 @@
       fullText += token;
       bubble.innerHTML = escapeHtml(fullText) + '<span class="stream-cursor">▋</span>';
       chatArea.scrollTop = chatArea.scrollHeight;
-    }, modelId).then(function() {
+    }, modelId, systemPrompt).then(function() {
       bubble.innerHTML = escapeHtml(fullText);
       isTyping = false;
     }).catch(function(e) {
@@ -316,11 +367,152 @@
     inputBox.style.height = Math.min(inputBox.scrollHeight, 120) + 'px';
   });
 
+  /* ---- 系统提示词 ---- */
+  $('systemPromptToggle').addEventListener('click', function() {
+    systemPromptVisible = !systemPromptVisible;
+    var area = $('systemPromptArea');
+    area.style.display = systemPromptVisible ? '' : 'none';
+    if (systemPromptVisible && window.AppState.selectedModelId) {
+      loadSystemPrompt(window.AppState.selectedModelId);
+      $('systemPromptInput').focus();
+    }
+  });
+
   $('newChatBtn').addEventListener('click', newConversation);
 
   // 暴露全局接口给侧边栏 onclick
   window.switchConversation = switchConversation;
   window.deleteConversation = deleteConversation;
+
+  /* ---- 图片生成 ---- */
+  $('imageGenBtn').addEventListener('click', function() {
+    var prompt = $('imagePrompt').value.trim();
+    if (!prompt || isTyping) return;
+    var area = $('imagePreviewArea');
+    area.innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">⏳</span><span class="image-preview-placeholder-text">正在生成图片…</span></div>';
+
+    // 尝试调用运行中的 FLUX 模型
+    if (window.chatService && window.chatService.generateImage) {
+      window.chatService.generateImage(prompt, function(b64) {
+        if (b64) {
+          area.innerHTML = '<img src="data:image/png;base64,' + b64 + '" alt="' + escapeHtml(prompt) + '">';
+        }
+      }).then(function() {
+        // done
+      }).catch(function(e) {
+        // 模型未运行或生成失败 → 显示占位符
+        area.innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">🎨</span><span class="image-preview-placeholder-text">「' + escapeHtml(prompt) + '」<br><span style="font-size:12px;color:var(--text-muted)">' + escapeHtml(e.message || '请先启动 FLUX 模型') + '</span></span></div>';
+      });
+    } else {
+      // 兜底占位
+      setTimeout(function() {
+        area.innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">🎨</span><span class="image-preview-placeholder-text">「' + escapeHtml(prompt) + '」<br><span style="font-size:12px;color:var(--text-muted)">（图片生成功能接入中）</span></span></div>';
+      }, 1000);
+    }
+  });
+  $('imagePrompt').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('imageGenBtn').click(); }
+  });
+
+  /* ---- 翻译 ---- */
+  // 翻译 prompt 模板，保存到 localStorage
+  var TRANSLATE_TEMPLATE_KEY = 'flowy_translate_template';
+  var translateTemplateTimer = null;
+
+  function loadTranslateTemplate() {
+    var saved = localStorage.getItem(TRANSLATE_TEMPLATE_KEY);
+    if (saved) {
+      $('translateTemplateInput').value = saved;
+    }
+  }
+
+  function saveTranslateTemplate() {
+    var val = $('translateTemplateInput').value;
+    localStorage.setItem(TRANSLATE_TEMPLATE_KEY, val);
+  }
+
+  // 模板切换
+  $('translateTemplateToggle').addEventListener('click', function() {
+    var area = $('translateTemplateArea');
+    if (area.style.display === 'none') {
+      area.style.display = '';
+      loadTranslateTemplate();
+    } else {
+      area.style.display = 'none';
+    }
+  });
+
+  // 自动保存模板（500ms 防抖）
+  $('translateTemplateInput').addEventListener('input', function() {
+    if (translateTemplateTimer) clearTimeout(translateTemplateTimer);
+    translateTemplateTimer = setTimeout(saveTranslateTemplate, 500);
+  });
+
+  $('translateBtn').addEventListener('click', function() {
+    var text = $('translateSrcText').value.trim();
+    if (!text || isTyping) return;
+    var src = $('translateSrc').value;
+    var dst = $('translateDst').value;
+    var output = $('translateOutput');
+
+    // 读取模板并替换占位符
+    var template = $('translateTemplateInput').value.trim();
+    if (!template) {
+      template = '将以下文本翻译为 {target_lang}，注意只需要输出翻译后的结果，不要额外解释：\n\n{source_text}';
+    }
+    var prompt = template
+      .replace(/\{target_lang\}/g, dst === 'zh' ? '中文' : dst === 'en' ? 'English' : dst === 'ja' ? '日本語' : dst === 'ko' ? '한국어' : dst === 'fr' ? 'Français' : dst === 'de' ? 'Deutsch' : dst === 'es' ? 'Español' : dst === 'pt' ? 'Português' : dst === 'ru' ? 'Русский' : dst)
+      .replace(/\{source_text\}/g, text);
+
+    // 查找运行中的模型
+    var models = window.AppState.models || [];
+    var modelId = null;
+    for (var i = 0; i < models.length; i++) {
+      if (models[i].status === 'running') { modelId = models[i].id; break; }
+    }
+    if (!modelId) {
+      output.innerHTML = '<span style="color:var(--warn-color)">⚠️ 没有正在运行的模型</span>';
+      return;
+    }
+
+    isTyping = true;
+    output.innerHTML = '<span style="color:var(--text-muted)">⏳ 翻译中…</span>';
+
+    // 添加 source 语言信息到 prompt（非 auto 时）
+    if (src !== 'auto') {
+      prompt = '源语言为' + (src === 'zh' ? '中文' : src === 'en' ? '英语' : src === 'ja' ? '日语' : src === 'ko' ? '韩语' : src === 'fr' ? '法语' : src === 'de' ? '德语' : src === 'es' ? '西班牙语' : src === 'pt' ? '葡萄牙语' : src === 'ru' ? '俄语' : src) + '。' + prompt;
+    }
+
+    window.chatService.chat(prompt, function(token) {
+      if (token === '__DONE__') {
+        isTyping = false;
+        return;
+      }
+      // 每次追加前清空 loading 状态
+      if (output.querySelector('.translate-output-placeholder')) {
+        output.innerHTML = '';
+      }
+      output.innerHTML += escapeHtml(token);
+    }, modelId).catch(function(e) {
+      isTyping = false;
+      output.innerHTML = '<span style="color:var(--warn-color)">翻译失败: ' + escapeHtml(String(e)) + '</span>';
+    });
+  });
+
+  // 翻译原文字数统计
+  $('translateSrcText').addEventListener('input', function() {
+    var len = this.value.length;
+    $('translateSrcCount').textContent = len + ' 字';
+  });
+
+  // 翻译语言交换按钮
+  $('translateSwap').addEventListener('click', function() {
+    var src = $('translateSrc');
+    var dst = $('translateDst');
+    var tmp = src.value;
+    src.value = dst.value;
+    dst.value = tmp;
+  });
 
   // 初始：建一个默认对话
   newConversation();
