@@ -165,7 +165,7 @@ void ChatService::startModel(const std::string& id, const json& args, WebViewWra
     std::string start_err;
     if (startServer(gguf_path, params, usedPorts, port, server, start_err)) {
         std::lock_guard<std::mutex> lock(m_mutex);
-        auto rm = std::make_unique<RunningModel>();
+        auto rm = std::make_shared<RunningModel>();
         rm->model_id = model_id;
         rm->gguf_path = gguf_path;
         rm->params = params;
@@ -424,11 +424,17 @@ json ChatService::getMetrics(const json& args) {
     std::string model_id = p.is_object() ? p.value("modelId", "") : "";
 
     if (!model_id.empty()) {
-        // 锁内取指针引用，锁内采样单个模型，避免与 stop 竞争删除。
-        std::lock_guard<std::mutex> lock(m_mutex);
-        auto it = m_models.find(model_id);
-        if (it != m_models.end() && it->second->running.load()) {
-            return CppObject::ok_result(metricsFor(it->second.get()));
+        // 锁内只取 shared_ptr，采样在外进行（nvidia-smi 耗时 ~500ms）
+        std::shared_ptr<RunningModel> rm;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            auto it = m_models.find(model_id);
+            if (it != m_models.end() && it->second->running.load()) {
+                rm = it->second;
+            }
+        }
+        if (rm) {
+            return CppObject::ok_result(metricsFor(rm.get()));
         }
         json d = json::object();
         d["status"] = "stopped";
@@ -439,15 +445,19 @@ json ChatService::getMetrics(const json& args) {
         return CppObject::ok_result(d);
     }
 
-    // 无 modelId：返回每个运行模型一份指标。
-    json models = json::array();
+    // 无 modelId：锁内收集运行模型的 shared_ptr，再逐个采样（不阻塞其他操作）
+    std::vector<std::shared_ptr<RunningModel>> running;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         for (auto& [mid, rm] : m_models) {
             if (rm->running.load()) {
-                models.push_back(metricsFor(rm.get()));
+                running.push_back(rm);
             }
         }
+    }
+    json models = json::array();
+    for (auto& rm : running) {
+        models.push_back(metricsFor(rm.get()));
     }
     json d = json::object();
     d["status"] = models.empty() ? "stopped" : "ok";

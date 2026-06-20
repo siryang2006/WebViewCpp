@@ -11,9 +11,6 @@
   var filterPanel = $('filterPanel');
   var dl = window.downloadService;
 
-  // 筛选状态
-  var filterState = { param: 'all', type: 'all' };
-
   // 把内存(MB)格式化为 MB/GB
   function fmtMem(mb) {
     if (!mb) return '0 MB';

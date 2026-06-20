@@ -48,6 +48,12 @@ function switchFeature(feature) {
       ca.style.display = 'none';
     }
   }
+
+  // 侧边栏对话列表只与智能对话绑定
+  var sidebarTop = document.querySelector('.sidebar-top');
+  var chatHistory = $('chatHistory');
+  if (sidebarTop) sidebarTop.style.display = feature === 'chat' ? '' : 'none';
+  if (chatHistory) chatHistory.style.display = feature === 'chat' ? '' : 'none';
 }
 
 document.querySelectorAll('.feature-card').forEach(function(card) {

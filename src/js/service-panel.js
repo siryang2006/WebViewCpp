@@ -40,8 +40,9 @@
     }
     var m = (window.AppState.models || []).find(function(x) { return x.id === modelId; });
     if (!m) return;
-    window.AppState.apiPort = m.port || 0;
-    $('modelApiUrl').textContent = 'http://127.0.0.1:' + (m.port || '?');
+    var port = m.port || modelPorts[modelId] || 0;
+    window.AppState.apiPort = port;
+    $('modelApiUrl').textContent = port ? 'http://127.0.0.1:' + port : '-';
     $('stopModelBtn').style.display = '';
   }
 
@@ -155,8 +156,14 @@
     });
   });
 
-  AppBus.on('model:started', refreshPanel);
-  AppBus.on('model:stopped', refreshPanel);
+  AppBus.on('model:started', function(d) {
+    if (d && d.id && d.port) modelPorts[d.id] = d.port;
+    refreshPanel();
+  });
+  AppBus.on('model:stopped', function(d) {
+    if (d && d.id) delete modelPorts[d.id];
+    refreshPanel();
+  });
 
   refreshPanel();
 })();

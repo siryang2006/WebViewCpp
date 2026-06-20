@@ -5,6 +5,7 @@
 #include <curl/curl.h>
 #include <fstream>
 #include <sstream>
+#include <mutex>
 #include <sys/stat.h>
 
 #ifdef _WIN32
@@ -21,7 +22,7 @@ public:
         bind_async("deleteFile", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
             std::string path = args.is_array() && args.size() > 0 ? args[0].get<std::string>() : "";
             std::string dir = m_base_dir;
-            wv->dispatch_task([id, path, dir, wv]() {
+            wv->dispatch_task([id, path, dir, this, wv]() {
                 if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
                 if (path.empty()) { wv->reject(id, "path is required"); return; }
                 // 安全检查：禁止路径穿越
@@ -47,6 +48,7 @@ public:
                     wv->reject(id, "Invalid path"); return;
                 }
 
+                std::lock_guard<std::mutex> lock(m_write_mutex);
                 int ret = remove(fullPath.c_str());
                 if (ret == 0) {
                     wv->resolve(id, {{"ok", true}, {"path", path}});
@@ -59,7 +61,7 @@ public:
         bind_async("addModel", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
             json model = args.is_array() && args.size() > 0 ? args[0] : args;
             std::string dir = m_base_dir;
-            wv->dispatch_task([id, model, dir, wv]() mutable {
+            wv->dispatch_task([id, model, dir, this, wv]() mutable {
                 if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
 
                 // 先验证下载地址并获取文件大小（curl HEAD 请求）
@@ -115,6 +117,7 @@ public:
                 }
 
                 std::string configPath = dir + "/models.json";
+                { std::lock_guard<std::mutex> lock(m_write_mutex);
                 std::ifstream f(configPath);
                 if (!f) { wv->reject(id, "models.json not found"); return; }
                 std::stringstream ss;
@@ -154,18 +157,19 @@ public:
                     wv->resolve(id, data);
                 } catch (const std::exception& e) {
                     wv->reject(id, std::string("failed: ") + e.what());
-                }
+                } }
             });
         });
 
         bind_async("updateModel", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
             json updates = args.is_array() && args.size() > 0 ? args[0] : args;
             std::string dir = m_base_dir;
-            wv->dispatch_task([id, updates, dir, wv]() {
+            wv->dispatch_task([id, updates, dir, this, wv]() {
                 if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
                 std::string targetId = updates.value("id", "");
                 if (targetId.empty()) { wv->reject(id, "id is required"); return; }
                 std::string configPath = dir + "/models.json";
+                std::lock_guard<std::mutex> lock(m_write_mutex);
                 std::ifstream f(configPath);
                 if (!f) { wv->reject(id, "models.json not found"); return; }
                 std::stringstream ss;
@@ -204,9 +208,10 @@ public:
         bind_async("deleteModel", [this](const std::string& id, const json& args, WebViewWrapper* wv) {
             std::string modelId = args.is_array() && args.size() > 0 ? args[0].get<std::string>() : "";
             std::string dir = m_base_dir;
-            wv->dispatch_task([id, modelId, dir, wv]() {
+            wv->dispatch_task([id, modelId, dir, this, wv]() {
                 if (!wv->is_ready()) { wv->reject(id, "WebView terminated"); return; }
                 std::string configPath = dir + "/models.json";
+                std::lock_guard<std::mutex> lock(m_write_mutex);
                 std::ifstream f(configPath);
                 if (!f) { wv->reject(id, "models.json not found"); return; }
                 std::stringstream ss;
@@ -279,4 +284,5 @@ public:
 
 private:
     std::string m_base_dir;
+    std::mutex m_write_mutex;
 };

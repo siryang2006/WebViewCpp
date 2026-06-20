@@ -110,6 +110,13 @@ tests/
 | llama-box FLUX warmup timeout | Pass `--no-warmup` to llama-box: CPU warmup of diffusion models (one full empty run) is extremely slow and trips the health-check timeout before the server is actually ready |
 | MSVC stat for >4GB files | Use `struct _stat64` + `_stat64()` instead of `struct stat` + `stat()` — MSVC's `struct stat` can fail for files >4GB on some CRT configurations. `_stat64` always uses 64-bit `st_size`. Affects `ConfigService` (file existence detection) and `DownloadService` (resume offset) |
 | size_bytes auto-sync from actual file | `ConfigService::read()` updates `size_bytes` from `st.st_size` when file exists on disk. `DownloadService::getFileSize(url)` does a HEAD request to get Content-Length; JS calls it in `startDownload()` before starting the actual download, so progress bar uses the real remote file size |
+| getMetrics → bind_async + dispatch_task | `ChatService::getMetrics` moved from `bind_sync` to `bind_async` so nvidia-smi sampling runs on worker thread, not blocking the UI. Copy shared_ptr under `m_mutex`, iterate outside lock |
+| Sidebar bound to feature | `switchFeature()` sets `sidebar-top` and `chatHistory` `display: none` for image/translate, restores for chat |
+| ConfigService write mutex | Added `std::mutex m_write_mutex` locked in `addModel`/`updateModel`/`deleteModel`/`deleteFile` to prevent concurrent `models.json` writes |
+| getRunningImageModel → window | Exposed `getRunningImageModel()` on `window` for CDP testing (auto-detects first running llama-box model) |
+| welcomeCard removed | Entire `.welcome-card` section deleted from HTML + CSS + JS |
+| imageModelSelect removed | Image panel model `<select>` removed; auto-detects running llama-box via `getRunningImageModel()` |
+| Orphaned CSS/JS removed | `.chip`, `.filter-check`, `.filter-row`, `.model-filter-panel` CSS selectors and `filterState` variable deleted |
 
 ## Conventions
 

@@ -375,61 +375,35 @@
 
   $('newChatBtn').addEventListener('click', newConversation);
 
-  // 暴露全局接口给侧边栏 onclick
+  // 暴露全局接口给侧边栏 onclick / CDP 测试
   window.switchConversation = switchConversation;
   window.deleteConversation = deleteConversation;
+  window.getRunningImageModel = getRunningImageModel;
 
   /* ---- 图片生成 ---- */
 
-  // 刷新图片模型下拉
-  function refreshImageModelSelect(eventData) {
-    var sel = $('imageModelSelect');
-    if (!sel) return;
+  function getRunningImageModel() {
     var models = window.AppState.models || [];
-    // 从 eventData 或 AppState 获取 FLUX 模型 ID
-    var fluxIds = [];
-    if (eventData && eventData.id) {
-      fluxIds.push(eventData.id);
-    }
-    models.forEach(function(m) {
-      if ((m.status === 'running' || fluxIds.indexOf(m.id) >= 0) &&
-          m.type && m.type.toUpperCase().includes('FLUX') &&
-          fluxIds.indexOf(m.id) < 0) {
-        fluxIds.push(m.id);
+    for (var i = 0; i < models.length; i++) {
+      if (models[i].status === 'running' && models[i].backend === 'llama-box') {
+        return models[i];
       }
-    });
-    if (fluxIds.length === 0) {
-      sel.innerHTML = '<option value="">没有运行的 FLUX 模型</option>';
-      return;
     }
-    var cur = sel.value;
-    sel.innerHTML = '';
-    for (var i = 0; i < fluxIds.length; i++) {
-      var opt = document.createElement('option');
-      opt.value = fluxIds[i];
-      var m = models.find(function(x) { return x.id === fluxIds[i]; });
-      opt.textContent = m ? (m.name || m.id) : fluxIds[i];
-      sel.appendChild(opt);
-    }
-    if (cur && fluxIds.indexOf(cur) >= 0) {
-      sel.value = cur;
-    }
+    return null;
   }
-  window.refreshImageModelSelect = refreshImageModelSelect;
 
   $('imageGenBtn').addEventListener('click', function() {
     var prompt = $('imagePrompt').value.trim();
     if (!prompt || isGenImage) return;
-    var sel = $('imageModelSelect');
-    var modelId = sel ? sel.value : '';
-    if (!modelId) {
-      $('imagePreviewArea').innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">⚠️</span><span class="image-preview-placeholder-text">请先在模型页面启动 FLUX 模型</span></div>';
+    var imgModel = getRunningImageModel();
+    if (!imgModel) {
+      $('imagePreviewArea').innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">⚠️</span><span class="image-preview-placeholder-text">请先在模型页面启动图像生成模型</span></div>';
       return;
     }
+    var modelId = imgModel.id;
     var area = $('imagePreviewArea');
     area.innerHTML = '<div class="image-preview-placeholder"><span class="image-preview-placeholder-icon">⏳</span><span class="image-preview-placeholder-text">正在生成图片…</span></div>';
 
-    // 尝试调用运行中的 FLUX 模型
     if (window.chatService && window.chatService.generateImage) {
       isGenImage = true;
       window.chatService.generateImage(prompt, function(b64) {
@@ -559,14 +533,7 @@
   });
 
 
-  // 监听模型生命周期，刷新图片模型下拉
-  if (window.AppBus) {
-    AppBus.on('model:started', refreshImageModelSelect);
-    AppBus.on('model:stopped', refreshImageModelSelect);
-  }
-
   // 初始：建一个默认对话
   newConversation();
   refreshModelSelect();
-  refreshImageModelSelect();
 })();

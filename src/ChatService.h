@@ -94,5 +94,5 @@ private:
     std::mutex m_mutex;
 
     // 运行中的模型，按 modelId 索引
-    std::map<std::string, std::unique_ptr<RunningModel>> m_models;
+    std::map<std::string, std::shared_ptr<RunningModel>> m_models;
 };
